@@ -1,2 +1,10 @@
-./test
-./musializer
+musializer
+
+.vscode/*
+
+.history/
+
+*.vsix
+
+.history
+.ionide
