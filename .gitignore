@@ -1,10 +1,9 @@
 musializer
+build/*
+music/*
 
 .vscode/*
-
 .history/
-
 *.vsix
-
 .history
 .ionide
