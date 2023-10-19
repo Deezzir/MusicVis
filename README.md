@@ -8,7 +8,7 @@ To run this project, you need to have `gcc` installed on your machine. Then, you
 
 ```console
 ./build.sh
-./musicvis <song.ogg>
+./musicvis
 ```
 
 ## Hot Reloading
@@ -17,7 +17,7 @@ To run this project, you need to have `gcc` installed on your machine. Then, you
 export HOTRELOAD=1
 export LD_LIBRARY_PATH="./build/:$LD_LIBRARY_PATH"
 ./build.sh
-./build/musualizer <song.ogg>
+./build/musicvis
 ```
 
 Keep the app running. Rebuild with `./build.sh`. Hot reload by focusing on the window of the app and pressing `R`.
