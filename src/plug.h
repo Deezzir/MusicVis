@@ -1,23 +1,14 @@
 #ifndef PLUG_H_
 #define PLUG_H_
 
-#include <raylib.h>
-#include <stdlib.h>
+#define LIST_OF_PLUGS                  \
+    PLUG(plug_init, void, void)        \
+    PLUG(plug_update, void, void)      \
+    PLUG(plug_pre_reload, void*, void) \
+    PLUG(plug_post_reload, void, void*)
 
-typedef struct {
-    size_t freq_bins;
-    Music music;
-} Plug;
-
-#define LIST_OF_PLUGS \
-    PLUG(plug_init) \
-    PLUG(plug_update) \
-    PLUG(plug_pre_reload) \
-    PLUG(plug_post_reload)
-
-typedef void (plug_init_t)(Plug* plug, const char* file_path);
-typedef void (plug_update_t)(Plug* plug);
-typedef void (plug_pre_reload_t)(Plug* plug);
-typedef void (plug_post_reload_t)(Plug* plug);
+#define PLUG(name, ret, ...) typedef ret(name##_t)(__VA_ARGS__);
+LIST_OF_PLUGS
+#undef PLUG
 
 #endif

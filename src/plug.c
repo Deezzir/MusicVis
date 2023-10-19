@@ -3,19 +3,27 @@
 #include <assert.h>
 #include <complex.h>
 #include <math.h>
+#include <raylib.h>
 #include <stdio.h>
+#include <stdlib.h>
 #include <string.h>
 
 #define N (1 << 13)
-#define FREQ_STEP 1.06
+#define FREQ_STEP 1.06f
+#define LOW_FREQ 1.0f
+#define FONT_SIZE 50
 
 typedef struct {
-    float left;
-    float right;
-} Frame;
+    Music music;
+    bool error;
+} Plug;
 
-float in[N];
-float complex out[N];
+float in_raw[N];
+float in_wd[N];
+float complex out_raw[N];
+float out_log[N];
+
+Plug* plug = NULL;
 
 void fft(float in[], size_t stride, float complex out[], size_t n) {
     if (n == 1) {
@@ -35,97 +43,143 @@ void fft(float in[], size_t stride, float complex out[], size_t n) {
     }
 }
 
-float log_base(float x, float b) {
-    return logf(x) / logf(b);
-}
-
 float amp(float complex v) {
-    float a = fabsf(crealf(v));
-    float b = fabsf(cimagf(v));
-    if (a < b) return b;
-    return a;
+    float a = crealf(v);
+    float b = cimagf(v);
+    return logf(a * a + b * b);
 }
 
 void callback(void* bufferData, unsigned int frames) {
-    Frame* frame_data = bufferData;
+    float(*fs)[2] = bufferData;
+
     for (size_t i = 0; i < frames; ++i) {
-        memmove(in, in + 1, (N - 1) * sizeof(in[0]));
-        in[N - 1] = frame_data[i].left;
+        memmove(in_raw, in_raw + 1, (N - 1) * sizeof(in_raw[0]));
+        in_raw[N - 1] = fs[i][0];
     }
 }
 
-void plug_init(Plug* plug, const char* file_path) {
-    plug->music = LoadMusicStream(file_path);
+void music_init(const char* mus_file_path) {
+    plug->music = LoadMusicStream(mus_file_path);
+    plug->error = false;
 
-    assert(plug->music.stream.sampleSize == 16);
-    assert(plug->music.stream.channels == 2);
-    printf("music.frameCount = %u\n", plug->music.frameCount);
-    printf("music.stream.sampleRate = %u\n", plug->music.stream.sampleRate);
-    printf("music.stream.sampleSize = %u\n", plug->music.stream.sampleSize);
-    printf("music.stream.channels = %u\n", plug->music.stream.channels);
-
-    SetMusicVolume(plug->music, 0.5f);
-    PlayMusicStream(plug->music);
-    AttachAudioStreamProcessor(plug->music.stream, callback);
-
-    plug->freq_bins = (size_t)log_base(N / 20, FREQ_STEP);
-    printf("freq_bins = %zu\n", plug->freq_bins);
+    if (IsMusicReady(plug->music)) {
+        SetMusicVolume(plug->music, 0.5f);
+        AttachAudioStreamProcessor(plug->music.stream, callback);
+        PlayMusicStream(plug->music);
+    } else {
+        plug->error = true;
+    }
 }
 
-void plug_pre_reload(Plug* plug) {
-    DetachAudioStreamProcessor(plug->music.stream, callback);
+void plug_init() {
+    plug = malloc(sizeof(*plug));
+    assert(plug != NULL && "ERROR: WE NEED MORE RAM");
+    memset(plug, 0, sizeof(*plug));
 }
 
-void plug_post_reload(Plug* plug) {
-    AttachAudioStreamProcessor(plug->music.stream, callback);
+Plug* plug_pre_reload(void) {
+    if (IsMusicReady(plug->music)) {
+        DetachAudioStreamProcessor(plug->music.stream, callback);
+    }
+    return plug;
 }
 
-void plug_update(Plug* plug) {
-    UpdateMusicStream(plug->music);
+void plug_post_reload(Plug* prev) {
+    plug = prev;
+    if (IsMusicReady(plug->music)) {
+        AttachAudioStreamProcessor(plug->music.stream, callback);
+    }
+}
 
-    if (IsKeyPressed(KEY_SPACE)) {
-        if (IsMusicStreamPlaying(plug->music)) {
-            PauseMusicStream(plug->music);
-        } else {
-            ResumeMusicStream(plug->music);
+void plug_update(void) {
+    int w = GetRenderWidth();
+    int h = GetRenderHeight();
+
+    if (IsMusicReady(plug->music)) {
+        UpdateMusicStream(plug->music);
+
+        if (IsKeyPressed(KEY_SPACE)) {
+            if (IsMusicStreamPlaying(plug->music)) {
+                PauseMusicStream(plug->music);
+            } else {
+                ResumeMusicStream(plug->music);
+            }
+        }
+
+        if (IsKeyPressed(KEY_Q)) {
+            StopMusicStream(plug->music);
+            PlayMusicStream(plug->music);
         }
     }
 
-    if (IsKeyPressed(KEY_Q)) {
-        StopMusicStream(plug->music);
-        PlayMusicStream(plug->music);
-    }
+    if (IsFileDropped()) {
+        FilePathList files = LoadDroppedFiles();
+        if (files.count > 0) {
+            const char* mus_file_path = files.paths[0];
 
-    int w = GetRenderWidth();
-    int h = GetRenderHeight();
+            if (IsMusicReady(plug->music)) {
+                StopMusicStream(plug->music);
+                UnloadMusicStream(plug->music);
+            }
+
+            music_init(mus_file_path);
+        }
+        UnloadDroppedFiles(files);
+    }
 
     BeginDrawing();
     {
         ClearBackground(CLITERAL(Color){0x0, 0x0, 0x22, 0xFF});
 
-        fft(in, 1, out, N);
-        float max_amp = 0.0f;
-        for (size_t i = 0; i < N; ++i) {
-            float a = amp(out[i]);
-            if (max_amp < a) max_amp = a;
-        }
+        if (IsMusicReady(plug->music)) {
+            size_t m = 0;
+            float max_amp = 1.0f;
 
-        float cell_width = (float)w / plug->freq_bins;
-        size_t m = 0;
-
-        for (float f = 20.0f; (size_t)f < N; f *= FREQ_STEP) {
-            float f1 = f * FREQ_STEP;
-            float a = 0.0f;
-
-            for (size_t q = (size_t)f; q < N && q < (size_t)f1; ++q) {
-                a += amp(out[q]);
+            // Honn Windowing
+            for (size_t i = 0; i < N; ++i) {
+                float t = (float)i / (N - 1);
+                float hann = 0.5 - 0.5 * cosf(2 * PI * t);
+                in_wd[i] = in_raw[i] * hann;
             }
-            a /= (size_t)f1 - (size_t)f + 1;
 
-            float t = a / max_amp;
-            Color c = ColorAlphaBlend(RED, ColorAlpha(BLUE, t), WHITE);
-            DrawRectangle(m * cell_width, h / 2 - h / 2 * t, cell_width, h / 2 * t, c);
-            m += 1;
+            fft(in_wd, 1, out_raw, N);
+
+            for (float f = LOW_FREQ; (size_t)f < N / 2; f = ceilf(f * FREQ_STEP)) {
+                float f1 = ceilf(f * FREQ_STEP);
+                float ampl = 0.0f;
+
+                for (size_t q = (size_t)f; q < N / 2 && q < (size_t)f1; ++q) {
+                    float a = amp(out_raw[q]);
+                    if (ampl < a) ampl = a;
+                }
+
+                if (max_amp < ampl) max_amp = ampl;
+                out_log[m++] = ampl;
+            }
+
+            float cell_width = (float)w / m;
+            for (size_t i = 0; i < m; ++i) {
+                out_log[i] /= max_amp;  // Normalize
+
+                float t = out_log[i];
+                Color c = ColorAlphaBlend(BLUE, ColorAlpha(RED, t), WHITE);
+                DrawRectangle(i * cell_width, h / 2 - h / 3 * t, cell_width, h / 3 * t, c);
+                DrawRectangle(i * cell_width, h / 2 - 1, cell_width, h / 3 * t, c);
+            }
+        } else {
+            const char* msg = NULL;
+            Color color;
+
+            if (plug->error) {
+                msg = "Couldn't load Music";
+                color = RED;
+            } else {
+                msg = "Drag&Drop Music";
+                color = WHITE;
+            }
+
+            int width = MeasureText(msg, FONT_SIZE);
+            DrawText(msg, w / 2 - width / 2, h / 2 - FONT_SIZE / 2, FONT_SIZE, color);
         }
     }
     EndDrawing();
