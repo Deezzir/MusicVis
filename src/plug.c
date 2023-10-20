@@ -12,6 +12,9 @@
 #define FREQ_STEP 1.06f
 #define LOW_FREQ 1.0f
 #define FONT_SIZE 50
+#define SMOOTHNESS 8
+#define HSV_SATURATION 0.8f
+#define HSV_VALUE 1.0f
 
 typedef struct {
     Music music;
@@ -22,6 +25,7 @@ float in_raw[N];
 float in_wd[N];
 float complex out_raw[N];
 float out_log[N];
+float out_smooth[N];
 
 Plug* plug = NULL;
 
@@ -94,6 +98,7 @@ void plug_post_reload(Plug* prev) {
 void plug_update(void) {
     int w = GetRenderWidth();
     int h = GetRenderHeight();
+    float dt = GetFrameTime();
 
     if (IsMusicReady(plug->music)) {
         UpdateMusicStream(plug->music);
@@ -159,12 +164,34 @@ void plug_update(void) {
 
             float cell_width = (float)w / m;
             for (size_t i = 0; i < m; ++i) {
-                out_log[i] /= max_amp;  // Normalize
+                out_log[i] /= max_amp;                                            // Normalize
+                out_smooth[i] += (out_log[i] - out_smooth[i]) * SMOOTHNESS * dt;  // Smooth
 
-                float t = out_log[i];
-                Color c = ColorAlphaBlend(BLUE, ColorAlpha(RED, t), WHITE);
-                DrawRectangle(i * cell_width, h / 2 - h / 3 * t, cell_width, h / 3 * t, c);
-                DrawRectangle(i * cell_width, h / 2 - 1, cell_width, h / 3 * t, c);
+                float t = out_smooth[i];
+                float hue = (float)i / m * 360;
+                float thick = cell_width / 3;
+                float radius = cell_width * 2 / 3 * sqrtf(t);
+
+                Color c = ColorFromHSV(hue, HSV_SATURATION, HSV_VALUE);
+                Vector2 startPos_t = {
+                    i * cell_width + cell_width / 2,
+                    h / 2 - h / 3 * t,
+                };
+                Vector2 endPos = {
+                    i * cell_width + cell_width / 2,
+                    h / 2,
+                };
+                Vector2 startPos_b = {
+                    i * cell_width + cell_width / 2,
+                    h / 2 + h / 3 * t,
+                };
+
+                // DrawRectangle(i * cell_width, h / 2 - h / 3 * t, ceilf(cell_width), h / 3 * t, c);
+                // DrawRectangle(i * cell_width, h / 2 - 1, ceilf(cell_width), h / 3 * t, c);
+                DrawLineEx(startPos_t, endPos, thick, c);
+                DrawCircleV(startPos_t, radius, c);
+                DrawLineEx(startPos_b, endPos, thick, c);
+                DrawCircleV(startPos_b, radius, c);
             }
         } else {
             const char* msg = NULL;
