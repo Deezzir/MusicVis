@@ -1,12 +1,10 @@
 #include <assert.h>
-#include <dlfcn.h>
 #include <raylib.h>
 #include <stdio.h>
 #include <stdlib.h>
 
 #include "plug.h"
 
-#define ARRAY_LEN(xs) sizeof(xs) / sizeof(xs[0])
 #define FACTOR 60
 
 const char* libplug_file_name = "libplug.so";
@@ -23,6 +21,8 @@ LIST_OF_PLUGS
 #endif
 
 #ifdef HOTRELOAD
+#include <dlfcn.h>
+
 bool reload_libplug(void) {
     if (libplug != NULL) dlclose(libplug);
 
@@ -50,14 +50,14 @@ bool reload_libplug(void) {
 int main(void) {
     if (!reload_libplug()) return 1;
 
-    SetConfigFlags(FLAG_WINDOW_RESIZABLE);
+    SetConfigFlags(FLAG_WINDOW_RESIZABLE | FLAG_MSAA_4X_HINT);
     InitWindow(FACTOR * 16, FACTOR * 9, "Music Visualizer");
     SetTargetFPS(60);
     InitAudioDevice();
 
     plug_init();
 
-    while (!WindowShouldClose()) {
+    while (!WindowShouldClose() && !IsKeyPressed(KEY_ESCAPE)) {
         if (IsKeyPressed(KEY_R)) {
             void* plug = plug_pre_reload();
             if (!reload_libplug()) return 1;

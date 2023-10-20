@@ -4,6 +4,7 @@
 #include <complex.h>
 #include <math.h>
 #include <raylib.h>
+#include <rlgl.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -13,21 +14,55 @@
 #define LOW_FREQ 1.0f
 #define FONT_SIZE 50
 #define SMOOTHNESS 8
-#define HSV_SATURATION 0.8f
+#define SMEARNESS 3
+#define HSV_SATURATION 0.75f
 #define HSV_VALUE 1.0f
+#define TWO_PI 2 * PI
 
+const char* CIRCLE_FS_FILEPATH = "./shaders/circle.fs";
 typedef struct {
     Music music;
     bool error;
+    Shader circle;
+    int circle_radius_location;
+    int circle_power_location;
+
+    float in_raw[N];
+    float in_wd[N];
+    float complex out_raw[N];
+    float out_log[N];
+    float out_smooth[N];
+    float out_smear[N];
 } Plug;
 
-float in_raw[N];
-float in_wd[N];
-float complex out_raw[N];
-float out_log[N];
-float out_smooth[N];
+Plug* p = NULL;
 
-Plug* plug = NULL;
+static inline float amp(float complex v) {
+    float a = crealf(v);
+    float b = cimagf(v);
+    return logf(a * a + b * b);
+}
+
+void draw_texture_from_endpoints(Texture tex, Vector2 startPos, Vector2 endPos, float radius, Color c) {
+    Rectangle dest, source;
+    Vector2 origin = {0};
+
+    dest.width = 2 * radius;
+
+    if (endPos.y >= startPos.y) {
+        dest.x = startPos.x - radius;
+        dest.y = startPos.y;
+        dest.height = endPos.y - startPos.y;
+        source = (Rectangle){0, 0.5, 1, 0.5};
+    } else {
+        dest.x = endPos.x - radius;
+        dest.y = endPos.y;
+        source = (Rectangle){0, 0, 1, 0.5};
+        dest.height = startPos.y - endPos.y;
+    }
+
+    DrawTexturePro(tex, source, dest, origin, 0, c);
+}
 
 void fft(float in[], size_t stride, float complex out[], size_t n) {
     if (n == 1) {
@@ -47,52 +82,146 @@ void fft(float in[], size_t stride, float complex out[], size_t n) {
     }
 }
 
-float amp(float complex v) {
-    float a = crealf(v);
-    float b = cimagf(v);
-    return logf(a * a + b * b);
+size_t fft_proccess(float dt) {
+    size_t m = 0;
+    float max_amp = 1.0f;
+
+    // Honn Windowing
+    for (size_t i = 0; i < N; ++i) {
+        float t = (float)i / (N - 1);
+        float hann = 0.5 - 0.5 * cosf(TWO_PI * t);
+        p->in_wd[i] = p->in_raw[i] * hann;
+    }
+
+    // Perform FFT
+    fft(p->in_wd, 1, p->out_raw, N);
+
+    for (float f = LOW_FREQ; (size_t)f < N / 2; f = ceilf(f * FREQ_STEP)) {
+        float f1 = ceilf(f * FREQ_STEP);
+        float ampl = 0.0f;
+
+        for (size_t q = (size_t)f; q < N / 2 && q < (size_t)f1; ++q) {
+            float a = amp(p->out_raw[q]);
+            ampl = fmaxf(ampl, a);
+        }
+
+        max_amp = fmaxf(max_amp, ampl);
+        p->out_log[m++] = ampl;
+    }
+
+    for (size_t i = 0; i < m; ++i) {
+        p->out_log[i] /= max_amp;                                                  // Normalize
+        p->out_smooth[i] += (p->out_log[i] - p->out_smooth[i]) * SMOOTHNESS * dt;  // Smooth
+        p->out_smear[i] += (p->out_smooth[i] - p->out_smear[i]) * SMEARNESS * dt;  // Smear
+    }
+
+    return m;
+}
+
+void fft_render(size_t w, size_t h, size_t m) {
+    float cell_width = (float)w / m;
+
+    // Draw Bars and Circles
+    for (size_t i = 0; i < m; ++i) {
+        float t_smooth = p->out_smooth[i];
+        float t_smear = p->out_smear[i];
+
+        float hue = (float)i / m * 360;
+        Color c = ColorFromHSV(hue, HSV_SATURATION, HSV_VALUE);
+
+        float thick = cell_width / 3;
+        float radius = 3 * cell_width * sqrtf(t_smooth);
+
+        Texture texture = {rlGetTextureIdDefault(), 1, 1, 1, PIXELFORMAT_UNCOMPRESSED_R8G8B8A8};
+
+        Vector2 middlePos = {i * cell_width + cell_width / 2, h / 2};
+        Vector2 startPos_t = {middlePos.x, h / 2 - h / 3 * t_smooth};
+        Vector2 startPos_b = {middlePos.x, h / 2 + h / 3 * t_smooth};
+
+        // Draw Bars
+        DrawLineEx(startPos_t, middlePos, thick, c);
+        DrawLineEx(startPos_b, middlePos, thick, c);
+
+        // Draw Smear
+        SetShaderValue(p->circle, p->circle_radius_location, (float[1]){0.3f}, SHADER_UNIFORM_FLOAT);
+        SetShaderValue(p->circle, p->circle_power_location, (float[1]){2.0f}, SHADER_UNIFORM_FLOAT);
+        BeginShaderMode(p->circle);
+        {
+            float radius = cell_width * sqrtf(t_smooth);
+            Vector2 endPos_t = {middlePos.x, h / 2 - h / 3 * t_smear};
+            Vector2 endPos_b = {middlePos.x, h / 2 + h / 3 * t_smear};
+            draw_texture_from_endpoints(texture, startPos_t, endPos_t, radius, c);
+            draw_texture_from_endpoints(texture, startPos_b, endPos_b, radius, c);
+        }
+        EndShaderMode();
+
+        // Draw Circles
+        SetShaderValue(p->circle, p->circle_radius_location, (float[1]){0.08f}, SHADER_UNIFORM_FLOAT);
+        SetShaderValue(p->circle, p->circle_power_location, (float[1]){4.0f}, SHADER_UNIFORM_FLOAT);
+        BeginShaderMode(p->circle);
+        {
+            Vector2 pos_t = {.x = startPos_t.x - radius, .y = startPos_t.y - radius};
+            Vector2 pos_b = {.x = startPos_b.x - radius, .y = startPos_b.y - radius};
+            DrawTextureEx(texture, pos_t, 0, 2 * radius, c);
+            DrawTextureEx(texture, pos_b, 0, 2 * radius, c);
+        }
+        EndShaderMode();
+    }
+}
+
+void fft_push(float frame) {
+    memmove(p->in_raw, p->in_raw + 1, (N - 1) * sizeof(p->in_raw[0]));
+    p->in_raw[N - 1] = frame;
 }
 
 void callback(void* bufferData, unsigned int frames) {
     float(*fs)[2] = bufferData;
 
     for (size_t i = 0; i < frames; ++i) {
-        memmove(in_raw, in_raw + 1, (N - 1) * sizeof(in_raw[0]));
-        in_raw[N - 1] = fs[i][0];
+        fft_push(fs[i][0]);
     }
 }
 
 void music_init(const char* mus_file_path) {
-    plug->music = LoadMusicStream(mus_file_path);
-    plug->error = false;
+    p->music = LoadMusicStream(mus_file_path);
+    p->error = false;
 
-    if (IsMusicReady(plug->music)) {
-        SetMusicVolume(plug->music, 0.5f);
-        AttachAudioStreamProcessor(plug->music.stream, callback);
-        PlayMusicStream(plug->music);
+    if (IsMusicReady(p->music)) {
+        SetMusicVolume(p->music, 0.5f);
+        AttachAudioStreamProcessor(p->music.stream, callback);
+        PlayMusicStream(p->music);
     } else {
-        plug->error = true;
+        p->error = true;
     }
 }
 
 void plug_init() {
-    plug = malloc(sizeof(*plug));
-    assert(plug != NULL && "ERROR: WE NEED MORE RAM");
-    memset(plug, 0, sizeof(*plug));
+    p = malloc(sizeof(*p));
+    assert(p != NULL && "ERROR: WE NEED MORE RAM");
+    memset(p, 0, sizeof(*p));
+
+    p->circle = LoadShader(NULL, CIRCLE_FS_FILEPATH);
+    p->circle_radius_location = GetShaderLocation(p->circle, "radius");
+    p->circle_power_location = GetShaderLocation(p->circle, "power");
 }
 
 Plug* plug_pre_reload(void) {
-    if (IsMusicReady(plug->music)) {
-        DetachAudioStreamProcessor(plug->music.stream, callback);
+    if (IsMusicReady(p->music)) {
+        DetachAudioStreamProcessor(p->music.stream, callback);
     }
-    return plug;
+    return p;
 }
 
 void plug_post_reload(Plug* prev) {
-    plug = prev;
-    if (IsMusicReady(plug->music)) {
-        AttachAudioStreamProcessor(plug->music.stream, callback);
+    p = prev;
+    if (IsMusicReady(p->music)) {
+        AttachAudioStreamProcessor(p->music.stream, callback);
     }
+
+    UnloadShader(p->circle);
+    p->circle = LoadShader(NULL, CIRCLE_FS_FILEPATH);
+    p->circle_radius_location = GetShaderLocation(p->circle, "radius");
+    p->circle_power_location = GetShaderLocation(p->circle, "power");
 }
 
 void plug_update(void) {
@@ -100,20 +229,20 @@ void plug_update(void) {
     int h = GetRenderHeight();
     float dt = GetFrameTime();
 
-    if (IsMusicReady(plug->music)) {
-        UpdateMusicStream(plug->music);
+    if (IsMusicReady(p->music)) {
+        UpdateMusicStream(p->music);
 
         if (IsKeyPressed(KEY_SPACE)) {
-            if (IsMusicStreamPlaying(plug->music)) {
-                PauseMusicStream(plug->music);
+            if (IsMusicStreamPlaying(p->music)) {
+                PauseMusicStream(p->music);
             } else {
-                ResumeMusicStream(plug->music);
+                ResumeMusicStream(p->music);
             }
         }
 
         if (IsKeyPressed(KEY_Q)) {
-            StopMusicStream(plug->music);
-            PlayMusicStream(plug->music);
+            StopMusicStream(p->music);
+            PlayMusicStream(p->music);
         }
     }
 
@@ -122,9 +251,9 @@ void plug_update(void) {
         if (files.count > 0) {
             const char* mus_file_path = files.paths[0];
 
-            if (IsMusicReady(plug->music)) {
-                StopMusicStream(plug->music);
-                UnloadMusicStream(plug->music);
+            if (IsMusicReady(p->music)) {
+                StopMusicStream(p->music);
+                UnloadMusicStream(p->music);
             }
 
             music_init(mus_file_path);
@@ -134,70 +263,16 @@ void plug_update(void) {
 
     BeginDrawing();
     {
-        ClearBackground(CLITERAL(Color){0x0, 0x0, 0x22, 0xFF});
+        ClearBackground(CLITERAL(Color){0x0, 0x0, 0x15, 0xFF});
 
-        if (IsMusicReady(plug->music)) {
-            size_t m = 0;
-            float max_amp = 1.0f;
-
-            // Honn Windowing
-            for (size_t i = 0; i < N; ++i) {
-                float t = (float)i / (N - 1);
-                float hann = 0.5 - 0.5 * cosf(2 * PI * t);
-                in_wd[i] = in_raw[i] * hann;
-            }
-
-            fft(in_wd, 1, out_raw, N);
-
-            for (float f = LOW_FREQ; (size_t)f < N / 2; f = ceilf(f * FREQ_STEP)) {
-                float f1 = ceilf(f * FREQ_STEP);
-                float ampl = 0.0f;
-
-                for (size_t q = (size_t)f; q < N / 2 && q < (size_t)f1; ++q) {
-                    float a = amp(out_raw[q]);
-                    if (ampl < a) ampl = a;
-                }
-
-                if (max_amp < ampl) max_amp = ampl;
-                out_log[m++] = ampl;
-            }
-
-            float cell_width = (float)w / m;
-            for (size_t i = 0; i < m; ++i) {
-                out_log[i] /= max_amp;                                            // Normalize
-                out_smooth[i] += (out_log[i] - out_smooth[i]) * SMOOTHNESS * dt;  // Smooth
-
-                float t = out_smooth[i];
-                float hue = (float)i / m * 360;
-                float thick = cell_width / 3;
-                float radius = cell_width * 2 / 3 * sqrtf(t);
-
-                Color c = ColorFromHSV(hue, HSV_SATURATION, HSV_VALUE);
-                Vector2 startPos_t = {
-                    i * cell_width + cell_width / 2,
-                    h / 2 - h / 3 * t,
-                };
-                Vector2 endPos = {
-                    i * cell_width + cell_width / 2,
-                    h / 2,
-                };
-                Vector2 startPos_b = {
-                    i * cell_width + cell_width / 2,
-                    h / 2 + h / 3 * t,
-                };
-
-                // DrawRectangle(i * cell_width, h / 2 - h / 3 * t, ceilf(cell_width), h / 3 * t, c);
-                // DrawRectangle(i * cell_width, h / 2 - 1, ceilf(cell_width), h / 3 * t, c);
-                DrawLineEx(startPos_t, endPos, thick, c);
-                DrawCircleV(startPos_t, radius, c);
-                DrawLineEx(startPos_b, endPos, thick, c);
-                DrawCircleV(startPos_b, radius, c);
-            }
+        if (IsMusicReady(p->music)) {
+            size_t m = fft_proccess(dt);
+            fft_render(w, h, m);
         } else {
             const char* msg = NULL;
             Color color;
 
-            if (plug->error) {
+            if (p->error) {
                 msg = "Couldn't load Music";
                 color = RED;
             } else {
