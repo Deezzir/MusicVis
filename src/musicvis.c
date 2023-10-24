@@ -5,6 +5,8 @@
 
 #include "plug.h"
 
+#define LOGO_FILEPATH "./resources/logo/favicon.png"
+
 #define FACTOR 60
 
 const char* libplug_file_name = "libplug.so";
@@ -43,21 +45,30 @@ bool reload_libplug(void) {
 
     return true;
 }
+
+void clean_libplug(void) {
+    if (libplug != NULL) dlclose(libplug);
+}
 #else
 #define reload_libplug() true
+#define clean_libplug() 0
 #endif
 
 int main(void) {
     if (!reload_libplug()) return 1;
 
-    SetConfigFlags(FLAG_WINDOW_RESIZABLE | FLAG_MSAA_4X_HINT);
+    Image logo = LoadImage(LOGO_FILEPATH);
+
+    SetConfigFlags(FLAG_WINDOW_RESIZABLE);
     InitWindow(FACTOR * 16, FACTOR * 9, "Music Visualizer");
     SetTargetFPS(60);
+    SetWindowIcon(logo);
+    SetExitKey(KEY_NULL);
     InitAudioDevice();
 
     plug_init();
 
-    while (!WindowShouldClose() && !IsKeyPressed(KEY_ESCAPE)) {
+    while (!WindowShouldClose()) {
         if (IsKeyPressed(KEY_R)) {
             void* plug = plug_pre_reload();
             if (!reload_libplug()) return 1;
@@ -66,6 +77,10 @@ int main(void) {
         plug_update();
     }
 
+    plug_clean();
+    clean_libplug();
+
+    UnloadImage(logo);
     CloseAudioDevice();
     CloseWindow();
     return 0;
