@@ -4,11 +4,11 @@ This is a project that aims to create a simple music visualizer using the `C` pr
 
 ## Demo
 
-## Quick Start
-
 https://github.com/Deezzir/MusicVis/assets/55366304/7b712b2d-e2f8-487f-a45c-fd1a0bac5593
 
 Music by `Nu11` and `pilotredsun`.
+
+## Quick Start
 
 To run this project, you need to have `gcc` installed on your machine. Then, you can run the following commands:
 
