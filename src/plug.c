@@ -17,6 +17,7 @@
 
 // Images
 #define FULLSCREEN_IMAGE_FILEPATH "./resources/images/fullscreen.png"
+#define VOLUME_IMAGE_FILEPATH "./resources/images/volume.png"
 
 // Parameters
 #define N (1 << 13)
@@ -25,8 +26,8 @@
 #define SMOOTHNESS 8
 #define SMEARNESS 3
 
-#define FONT_SIZE 50
-#define TRACK_NAME_FONT 18
+#define GENERAL_FONT_SIZE 50
+#define TRACK_NAME_FONT_SIZE 18
 
 #define PANEL_PERCENT 0.25f
 #define TIMELINE_PERCENT 0.1f
@@ -35,6 +36,8 @@
 #define VELOCITY_DECAY 0.9f
 
 #define HUD_TIMER_SECS 2.0f
+#define HUD_ICON_SIZE 30.0f
+#define HUD_ICON_MARGIN 10.0f
 
 #define HSV_SATURATION 0.75f
 #define HSV_VALUE 1.0f
@@ -49,8 +52,8 @@
 #define COLOR_TRACK_BUTTON_SELECTED COLOR_ACCENT
 #define COLOR_TIMELINE_CURSOR COLOR_ACCENT
 #define COLOR_TIMELINE_BACKGROUND ColorBrightness(COLOR_BACKGROUND, -0.3)
-#define COLOR_FULLSCREEN_BTN_BACKGROUND ColorBrightness(COLOR_BACKGROUND, 0.15)
-#define COLOR_FULLSCREEN_BTN_HOVEROVER ColorBrightness(COLOR_FULLSCREEN_BTN_BACKGROUND, 0.15)
+#define COLOR_HUD_BTN_BACKGROUND ColorBrightness(COLOR_BACKGROUND, 0.15)
+#define COLOR_HUD_BTN_HOVEROVER ColorBrightness(COLOR_HUD_BTN_BACKGROUND, 0.15)
 
 typedef enum {
     CIRCLE_FRAGMENT = 0,
@@ -88,11 +91,13 @@ typedef struct {
     Tracks tracks;
     int cur_track;
     bool error;
+    float volume;
 
     Shader circle;
     int uniform_locs[COUNT_UNIFORMS];
     bool fullscreen;
     Texture2D fullscreen_tex;
+    Texture2D volume_tex;
 
     float in_raw[N];
     float in_wd[N];
@@ -184,7 +189,7 @@ void draw_texture_from_endpoints(Texture2D tex, Vector2 start_pos, Vector2 end_p
         dest.height = start_pos.y - end_pos.y;
     }
 
-    DrawTexturePro(tex, source, dest, (Vector2){0}, 0, c);
+    DrawTexturePro(tex, source, dest, CLITERAL(Vector2){0}, 0, c);
 }
 
 void fft_render(Rectangle boundary, size_t m) {
@@ -263,11 +268,19 @@ void error_load_track(void) {
     p->error = true;
 }
 
+bool track_exists(const char* file_path) {
+    for (size_t i = 0; i < p->tracks.count; ++i) {
+        Track* track = &p->tracks.items[i];
+        if (strcmp(track->file_path, file_path) == 0) return true;
+    }
+    return false;
+}
+
 void music_init(char* file_path) {
     Music music = LoadMusicStream(file_path);
 
     if (IsMusicReady(music)) {
-        SetMusicVolume(music, 0.5f);
+        SetMusicVolume(music, p->volume);
         AttachAudioStreamProcessor(music.stream, callback);
         PlayMusicStream(music);
 
@@ -296,43 +309,69 @@ void timeline_render(Rectangle boundary, Track* track) {
     float text_pad = ceilf(boundary.width * 0.02f);
     int text_w = MeasureText(time_whole, font_size);
     float pos_y = boundary.y + boundary.height / 2 - font_size / 2;
-    DrawText(time_elapsed, boundary.x + text_pad, pos_y, font_size, WHITE);
-    DrawText(time_whole, boundary.x + boundary.width - text_pad - text_w, pos_y, font_size, WHITE);
 
-    DrawLineEx(start_pos, end_pos, 2, COLOR_TIMELINE_CURSOR);          // Draw Cursor
-    DrawRectangleLinesEx(boundary, 2, COLOR_TRACK_BUTTON_BACKGROUND);  // Draw Contour
+    BeginScissorMode(boundary.x, boundary.y, boundary.width, boundary.height);
+    {
+        ClearBackground(COLOR_TIMELINE_BACKGROUND);
+        DrawText(time_elapsed, boundary.x + text_pad, pos_y, font_size, WHITE);
+        DrawText(time_whole, boundary.x + boundary.width - text_pad - text_w, pos_y, font_size, WHITE);
 
-    Vector2 mouse = GetMousePosition();
-    if (CheckCollisionPointRec(mouse, boundary)) {
-        if (IsMouseButtonDown(MOUSE_LEFT_BUTTON)) {
-            float t = (mouse.x - boundary.x) / boundary.width;
-            SeekMusicStream(track->music, t * len);
+        DrawLineEx(start_pos, end_pos, 2, COLOR_TIMELINE_CURSOR);          // Draw Cursor
+        DrawRectangleLinesEx(boundary, 2, COLOR_TRACK_BUTTON_BACKGROUND);  // Draw Contour
+
+        Vector2 mouse = GetMousePosition();
+        if (CheckCollisionPointRec(mouse, boundary)) {
+            if (IsMouseButtonDown(MOUSE_LEFT_BUTTON)) {
+                float t = (mouse.x - boundary.x) / boundary.width;
+                SeekMusicStream(track->music, t * len);
+            }
         }
     }
+    EndScissorMode();
 }
 
 bool fullscreen_btn_render(Rectangle boundary) {
     int icon_id;
     bool clicked = false;
-    float size = 30.0f;
-    float margin = 10.0f;
-    Rectangle btn = {boundary.x + boundary.width - (size + margin), boundary.y + margin, size, size};
+    Rectangle btn = {boundary.x + boundary.width - (HUD_ICON_SIZE + HUD_ICON_MARGIN), boundary.y + HUD_ICON_MARGIN, HUD_ICON_SIZE, HUD_ICON_SIZE};
 
     Color c;
     if (CheckCollisionPointRec(GetMousePosition(), btn)) {
         if (IsMouseButtonPressed(MOUSE_LEFT_BUTTON)) clicked = true;
 
-        c = COLOR_FULLSCREEN_BTN_HOVEROVER;
+        c = COLOR_HUD_BTN_HOVEROVER;
         icon_id = p->fullscreen ? 3 : 1;
     } else {
-        c = COLOR_FULLSCREEN_BTN_BACKGROUND;
+        c = COLOR_HUD_BTN_BACKGROUND;
         icon_id = p->fullscreen ? 2 : 0;
     }
 
     Rectangle source = {p->fullscreen_tex.width / 4 * icon_id, 0, p->fullscreen_tex.width / 4, p->fullscreen_tex.height};
-    DrawTexturePro(p->fullscreen_tex, source, btn, (Vector2){0}, 0, c);
+    DrawTexturePro(p->fullscreen_tex, source, btn, CLITERAL(Vector2){0}, 0, c);
 
     return clicked;
+}
+
+void volume_slider_render(Rectangle boundary) {
+    float btn_overall_size = HUD_ICON_SIZE + HUD_ICON_MARGIN;
+    Rectangle btn = {boundary.x + boundary.width - btn_overall_size, boundary.y + boundary.height - btn_overall_size, HUD_ICON_SIZE, HUD_ICON_SIZE};
+    Rectangle slider = {btn.x + (btn_overall_size) / 2, btn.y - HUD_ICON_MARGIN - HUD_ICON_SIZE * 4, HUD_ICON_SIZE / 4, HUD_ICON_SIZE * 4};
+
+    Color c;
+    if (CheckCollisionPointRec(GetMousePosition(), btn)) {
+        if (IsMouseButtonPressed(MOUSE_LEFT_BUTTON)) p->volume = p->volume == 0.0f ? 0.5f : 0.0f;
+        c = COLOR_HUD_BTN_HOVEROVER;
+        DrawRectangleRounded(slider, 0.5, 30, c);
+    } else {
+        c = COLOR_HUD_BTN_BACKGROUND;
+    }
+
+    int icon_id = icon_id = (p->volume > 0.5f) ? 2 : ((p->volume == 0.0f) ? 0 : 1);
+    Rectangle source = {p->volume_tex.width / 3 * icon_id, 0, p->volume_tex.width / 3, p->volume_tex.height};
+    DrawTexturePro(p->volume_tex, source, btn, CLITERAL(Vector2){0}, 0, c);
+
+    Track* track = get_cur_track();
+    if (track) SetMusicVolume(track->music, p->volume);
 }
 
 void track_panel_render(Rectangle boundary, float dt) {
@@ -396,7 +435,7 @@ void track_panel_render(Rectangle boundary, float dt) {
             char* track_name = strdup(orig);
             remove_extension(track_name);
 
-            float font_size = TRACK_NAME_FONT + item.height * 0.1f;
+            float font_size = TRACK_NAME_FONT_SIZE + item.height * 0.1f;
             float text_pad = item.width * 0.05f;
 
             int text_w = MeasureText(track_name, font_size);
@@ -437,21 +476,30 @@ void track_panel_render(Rectangle boundary, float dt) {
     EndScissorMode();
 }
 
+void plug_texture_setup() {
+    Image fullscreen_img = LoadImage(FULLSCREEN_IMAGE_FILEPATH);
+    p->fullscreen_tex = LoadTextureFromImage(fullscreen_img);
+    UnloadImage(fullscreen_img);
+
+    Image volume_img = LoadImage(VOLUME_IMAGE_FILEPATH);
+    p->volume_tex = LoadTextureFromImage(volume_img);
+    UnloadImage(volume_img);
+}
+
 void plug_init() {
     p = malloc(sizeof(*p));
     assert(p != NULL && "ERROR: WE NEED MORE RAM");
     memset(p, 0, sizeof(*p));
 
     p->cur_track = -1;
+    p->volume = 0.5f;
 
     p->circle = LoadShader(NULL, fragment_files[CIRCLE_FRAGMENT]);
     for (Uniform i = 0; i < COUNT_UNIFORMS; i++) {
         p->uniform_locs[i] = GetShaderLocation(p->circle, uniform_names[i]);
     }
 
-    Image fullscreen_tex = LoadImage(FULLSCREEN_IMAGE_FILEPATH);
-    p->fullscreen_tex = LoadTextureFromImage(fullscreen_tex);
-    UnloadImage(fullscreen_tex);
+    plug_texture_setup();
 }
 
 void plug_clean() {
@@ -466,6 +514,7 @@ void plug_clean() {
 
     UnloadShader(p->circle);
     UnloadTexture(p->fullscreen_tex);
+    UnloadTexture(p->volume_tex);
 
     da_free(&p->tracks);
     free(p);
@@ -492,9 +541,7 @@ void plug_post_reload(Plug* prev) {
         p->uniform_locs[i] = GetShaderLocation(p->circle, uniform_names[i]);
     }
 
-    Image fullscreen_img = LoadImage(FULLSCREEN_IMAGE_FILEPATH);
-    p->fullscreen_tex = LoadTextureFromImage(fullscreen_img);
-    UnloadImage(fullscreen_img);
+    plug_texture_setup();
 }
 
 void plug_update(void) {
@@ -524,6 +571,7 @@ void plug_update(void) {
     if (IsFileDropped()) {
         FilePathList files = LoadDroppedFiles();
         for (size_t i = 0; i < files.count; ++i) {
+            if (track_exists(files.paths[i])) continue;
             char* mus_file_path = strdup(files.paths[i]);
 
             Track* cur_track = get_cur_track();
@@ -568,6 +616,7 @@ void plug_update(void) {
             }
 
             if (hud_timer > 0.0f || !p->fullscreen) p->fullscreen ^= fullscreen_btn_render(preview_size);
+            volume_slider_render(preview_size);
         } else {
             const char* msg = NULL;
             Color c;
@@ -580,8 +629,8 @@ void plug_update(void) {
                 c = WHITE;
             }
 
-            int width = MeasureText(msg, FONT_SIZE);
-            DrawText(msg, w / 2 - width / 2, h / 2 - FONT_SIZE / 2, FONT_SIZE, c);
+            int width = MeasureText(msg, GENERAL_FONT_SIZE);
+            DrawText(msg, w / 2 - width / 2, h / 2 - GENERAL_FONT_SIZE / 2, GENERAL_FONT_SIZE, c);
         }
     }
     EndDrawing();
