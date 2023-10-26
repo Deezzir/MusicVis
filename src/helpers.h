@@ -24,9 +24,19 @@
 
 #endif
 
+static inline float amp(float complex v) {
+    float a = crealf(v);
+    float b = cimagf(v);
+    return logf(a * a + b * b);
+}
+
 void remove_extension(char* filename) {
     char* dot = strrchr(filename, '.');
     if (dot) {
         *dot = '\0';
     }
+}
+
+float Vector2SumComponents(Vector2 vec) {
+    return vec.x + vec.y;
 }

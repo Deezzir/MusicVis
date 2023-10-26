@@ -4,6 +4,7 @@
 #include <complex.h>
 #include <math.h>
 #include <raylib.h>
+#include <raymath.h>
 #include <rlgl.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -13,6 +14,9 @@
 
 // Fragment Files
 #define CIRCLE_FS_FILEPATH "./resources/shaders/circle.fs"
+
+// Images
+#define FULLSCREEN_IMAGE_FILEPATH "./resources/images/fullscreen.png"
 
 // Parameters
 #define N (1 << 13)
@@ -30,6 +34,8 @@
 #define TRACK_ITEM_PERCENT 0.2f
 #define VELOCITY_DECAY 0.9f
 
+#define HUD_TIMER_SECS 2.0f
+
 #define HSV_SATURATION 0.75f
 #define HSV_VALUE 1.0f
 
@@ -37,12 +43,14 @@
 
 #define COLOR_ACCENT ColorFromHSV(200, 0.75, 0.8)
 #define COLOR_BACKGROUND GetColor(0x000015FF)
-#define COLOR_TRACK_PANEL_BACKGROUND ColorBrightness(COLOR_BACKGROUND, -0.1)
+#define COLOR_TRACK_PANEL_BACKGROUND ColorBrightness(COLOR_BACKGROUND, -0.2)
 #define COLOR_TRACK_BUTTON_BACKGROUND ColorBrightness(COLOR_BACKGROUND, 0.15)
 #define COLOR_TRACK_BUTTON_HOVEROVER ColorBrightness(COLOR_TRACK_BUTTON_BACKGROUND, 0.15)
 #define COLOR_TRACK_BUTTON_SELECTED COLOR_ACCENT
 #define COLOR_TIMELINE_CURSOR COLOR_ACCENT
 #define COLOR_TIMELINE_BACKGROUND ColorBrightness(COLOR_BACKGROUND, -0.3)
+#define COLOR_FULLSCREEN_BTN_BACKGROUND ColorBrightness(COLOR_BACKGROUND, 0.15)
+#define COLOR_FULLSCREEN_BTN_HOVEROVER ColorBrightness(COLOR_FULLSCREEN_BTN_BACKGROUND, 0.15)
 
 typedef enum {
     CIRCLE_FRAGMENT = 0,
@@ -79,11 +87,12 @@ typedef struct {
 typedef struct {
     Tracks tracks;
     int cur_track;
+    bool error;
 
     Shader circle;
     int uniform_locs[COUNT_UNIFORMS];
-
-    bool error;
+    bool fullscreen;
+    Texture2D fullscreen_tex;
 
     float in_raw[N];
     float in_wd[N];
@@ -94,33 +103,6 @@ typedef struct {
 } Plug;
 
 Plug* p = NULL;
-
-static inline float amp(float complex v) {
-    float a = crealf(v);
-    float b = cimagf(v);
-    return logf(a * a + b * b);
-}
-
-void draw_texture_from_endpoints(Texture tex, Vector2 start_pos, Vector2 end_pos, float radius, Color c) {
-    Rectangle dest, source;
-    Vector2 origin = {0};
-
-    dest.width = 2 * radius;
-
-    if (end_pos.y >= start_pos.y) {
-        dest.x = start_pos.x - radius;
-        dest.y = start_pos.y;
-        dest.height = end_pos.y - start_pos.y;
-        source = (Rectangle){0, 0.5, 1, 0.5};
-    } else {
-        dest.x = end_pos.x - radius;
-        dest.y = end_pos.y;
-        source = (Rectangle){0, 0, 1, 0.5};
-        dest.height = start_pos.y - end_pos.y;
-    }
-
-    DrawTexturePro(tex, source, dest, origin, 0, c);
-}
 
 void fft_clean(void) {
     memset(p->in_raw, 0, sizeof(p->in_raw));
@@ -185,6 +167,26 @@ size_t fft_proccess(float dt) {
     return m;
 }
 
+void draw_texture_from_endpoints(Texture2D tex, Vector2 start_pos, Vector2 end_pos, float radius, Color c) {
+    Rectangle dest, source;
+
+    dest.width = 2 * radius;
+
+    if (end_pos.y >= start_pos.y) {
+        dest.x = start_pos.x - radius;
+        dest.y = start_pos.y;
+        dest.height = end_pos.y - start_pos.y;
+        source = (Rectangle){0, 0.5, 1, 0.5};
+    } else {
+        dest.x = end_pos.x - radius;
+        dest.y = end_pos.y;
+        source = (Rectangle){0, 0, 1, 0.5};
+        dest.height = start_pos.y - end_pos.y;
+    }
+
+    DrawTexturePro(tex, source, dest, (Vector2){0}, 0, c);
+}
+
 void fft_render(Rectangle boundary, size_t m) {
     float h = boundary.height;
     float w = boundary.width;
@@ -201,7 +203,7 @@ void fft_render(Rectangle boundary, size_t m) {
         float thick = roundf(cell_width / 3);
         float radius = 3 * cell_width * sqrtf(t_smooth);
 
-        Texture texture = {rlGetTextureIdDefault(), 1, 1, 1, PIXELFORMAT_UNCOMPRESSED_R8G8B8A8};
+        Texture2D texture = {rlGetTextureIdDefault(), 1, 1, 1, PIXELFORMAT_UNCOMPRESSED_R8G8B8A8};
 
         Vector2 middlePos = {boundary.x + i * cell_width + cell_width / 2, h / 2};
         Vector2 start_pos_t = {middlePos.x, h / 2 - h / 3 * t_smooth};
@@ -251,6 +253,11 @@ void callback(void* bufferData, unsigned int frames) {
     }
 }
 
+Track* get_cur_track() {
+    if (p->cur_track < 0 || (size_t)p->cur_track >= p->tracks.count) return NULL;
+    return &p->tracks.items[p->cur_track];
+}
+
 void error_load_track(void) {
     fprintf(stderr, "ERROR: Couldn't load track\n");
     p->error = true;
@@ -274,71 +281,6 @@ void music_init(char* file_path) {
     }
 }
 
-void plug_init() {
-    p = malloc(sizeof(*p));
-    assert(p != NULL && "ERROR: WE NEED MORE RAM");
-    memset(p, 0, sizeof(*p));
-
-    p->cur_track = -1;
-
-    p->circle = LoadShader(NULL, fragment_files[CIRCLE_FRAGMENT]);
-    for (Uniform i = 0; i < COUNT_UNIFORMS; i++) {
-        p->uniform_locs[i] = GetShaderLocation(p->circle, uniform_names[i]);
-    }
-}
-
-void plug_clean() {
-    fft_clean();
-
-    for (size_t i = 0; i < p->tracks.count; ++i) {
-        Track* track = &p->tracks.items[i];
-        DetachAudioStreamProcessor(track->music.stream, callback);
-        UnloadMusicStream(track->music);
-        free(track->file_path);
-    }
-
-    UnloadShader(p->circle);
-
-    da_free(&p->tracks);
-    free(p);
-}
-
-Plug* plug_pre_reload(void) {
-    for (size_t i = 0; i < p->tracks.count; ++i) {
-        Track* track = &p->tracks.items[i];
-        DetachAudioStreamProcessor(track->music.stream, callback);
-    }
-    return p;
-}
-
-void plug_post_reload(Plug* prev) {
-    p = prev;
-    for (size_t i = 0; i < p->tracks.count; ++i) {
-        Track* track = &p->tracks.items[i];
-        AttachAudioStreamProcessor(track->music.stream, callback);
-    }
-
-    UnloadShader(p->circle);
-    p->circle = LoadShader(NULL, fragment_files[CIRCLE_FRAGMENT]);
-    for (Uniform i = 0; i < COUNT_UNIFORMS; i++) {
-        p->uniform_locs[i] = GetShaderLocation(p->circle, uniform_names[i]);
-    }
-}
-
-Track* get_cur_track() {
-    if (p->cur_track < 0 || (size_t)p->cur_track >= p->tracks.count) return NULL;
-    return &p->tracks.items[p->cur_track];
-}
-
-void update_panel_scroll(float* panel_scroll, float panel_velocity, float dt, float frame_time, float max_scroll) {
-    float scroll_delta = panel_velocity * (dt + frame_time);
-    *panel_scroll -= scroll_delta;
-
-    // Clamp the panel_scroll value
-    if (*panel_scroll < 0) *panel_scroll = 0;
-    if (*panel_scroll > max_scroll) *panel_scroll = max_scroll;
-}
-
 void timeline_render(Rectangle boundary, Track* track) {
     float played = GetMusicTimePlayed(track->music);
     float len = GetMusicTimeLength(track->music);
@@ -359,7 +301,7 @@ void timeline_render(Rectangle boundary, Track* track) {
 
     DrawLineEx(start_pos, end_pos, 2, COLOR_TIMELINE_CURSOR);          // Draw Cursor
     DrawRectangleLinesEx(boundary, 2, COLOR_TRACK_BUTTON_BACKGROUND);  // Draw Contour
-    
+
     Vector2 mouse = GetMousePosition();
     if (CheckCollisionPointRec(mouse, boundary)) {
         if (IsMouseButtonDown(MOUSE_LEFT_BUTTON)) {
@@ -367,6 +309,30 @@ void timeline_render(Rectangle boundary, Track* track) {
             SeekMusicStream(track->music, t * len);
         }
     }
+}
+
+bool fullscreen_btn_render(Rectangle boundary) {
+    int icon_id;
+    bool clicked = false;
+    float size = 30.0f;
+    float margin = 10.0f;
+    Rectangle btn = {boundary.x + boundary.width - (size + margin), boundary.y + margin, size, size};
+
+    Color c;
+    if (CheckCollisionPointRec(GetMousePosition(), btn)) {
+        if (IsMouseButtonPressed(MOUSE_LEFT_BUTTON)) clicked = true;
+
+        c = COLOR_FULLSCREEN_BTN_HOVEROVER;
+        icon_id = p->fullscreen ? 3 : 1;
+    } else {
+        c = COLOR_FULLSCREEN_BTN_BACKGROUND;
+        icon_id = p->fullscreen ? 2 : 0;
+    }
+
+    Rectangle source = {p->fullscreen_tex.width / 4 * icon_id, 0, p->fullscreen_tex.width / 4, p->fullscreen_tex.height};
+    DrawTexturePro(p->fullscreen_tex, source, btn, (Vector2){0}, 0, c);
+
+    return clicked;
 }
 
 void track_panel_render(Rectangle boundary, float dt) {
@@ -395,8 +361,11 @@ void track_panel_render(Rectangle boundary, float dt) {
     if (max_scroll < 0) max_scroll = 0;
     if (panel_scroll > max_scroll) panel_scroll = max_scroll;
 
+    // Change background color
     BeginScissorMode(boundary.x, boundary.y, boundary.width, boundary.height);
     {
+        ClearBackground(COLOR_TRACK_PANEL_BACKGROUND);
+
         for (size_t i = 0; i < track_count; ++i) {
             Rectangle item = {
                 .x = boundary.x + panel_pad,
@@ -468,10 +437,71 @@ void track_panel_render(Rectangle boundary, float dt) {
     EndScissorMode();
 }
 
+void plug_init() {
+    p = malloc(sizeof(*p));
+    assert(p != NULL && "ERROR: WE NEED MORE RAM");
+    memset(p, 0, sizeof(*p));
+
+    p->cur_track = -1;
+
+    p->circle = LoadShader(NULL, fragment_files[CIRCLE_FRAGMENT]);
+    for (Uniform i = 0; i < COUNT_UNIFORMS; i++) {
+        p->uniform_locs[i] = GetShaderLocation(p->circle, uniform_names[i]);
+    }
+
+    Image fullscreen_tex = LoadImage(FULLSCREEN_IMAGE_FILEPATH);
+    p->fullscreen_tex = LoadTextureFromImage(fullscreen_tex);
+    UnloadImage(fullscreen_tex);
+}
+
+void plug_clean() {
+    fft_clean();
+
+    for (size_t i = 0; i < p->tracks.count; ++i) {
+        Track* track = &p->tracks.items[i];
+        DetachAudioStreamProcessor(track->music.stream, callback);
+        UnloadMusicStream(track->music);
+        free(track->file_path);
+    }
+
+    UnloadShader(p->circle);
+    UnloadTexture(p->fullscreen_tex);
+
+    da_free(&p->tracks);
+    free(p);
+}
+
+Plug* plug_pre_reload(void) {
+    for (size_t i = 0; i < p->tracks.count; ++i) {
+        Track* track = &p->tracks.items[i];
+        DetachAudioStreamProcessor(track->music.stream, callback);
+    }
+    return p;
+}
+
+void plug_post_reload(Plug* prev) {
+    p = prev;
+    for (size_t i = 0; i < p->tracks.count; ++i) {
+        Track* track = &p->tracks.items[i];
+        AttachAudioStreamProcessor(track->music.stream, callback);
+    }
+
+    UnloadShader(p->circle);
+    p->circle = LoadShader(NULL, fragment_files[CIRCLE_FRAGMENT]);
+    for (Uniform i = 0; i < COUNT_UNIFORMS; i++) {
+        p->uniform_locs[i] = GetShaderLocation(p->circle, uniform_names[i]);
+    }
+
+    Image fullscreen_img = LoadImage(FULLSCREEN_IMAGE_FILEPATH);
+    p->fullscreen_tex = LoadTextureFromImage(fullscreen_img);
+    UnloadImage(fullscreen_img);
+}
+
 void plug_update(void) {
     int w = GetRenderWidth();
     int h = GetRenderHeight();
     float dt = GetFrameTime();
+    static float hud_timer = HUD_TIMER_SECS;
 
     Track* track = get_cur_track();
 
@@ -486,9 +516,8 @@ void plug_update(void) {
             }
         }
 
-        if (IsKeyPressed(KEY_Q)) {
-            StopMusicStream(track->music);
-            PlayMusicStream(track->music);
+        if (IsKeyPressed(KEY_F)) {
+            p->fullscreen = !p->fullscreen;
         }
     }
 
@@ -510,20 +539,35 @@ void plug_update(void) {
         ClearBackground(COLOR_BACKGROUND);
 
         if (track) {
-            float tracks_panel_w = w * PANEL_PERCENT;
-            float timeline_h = h * TIMELINE_PERCENT;
-            Rectangle preview_size = {tracks_panel_w, 0, w - tracks_panel_w, h - timeline_h};
-
             size_t m = fft_proccess(dt);
+            Rectangle preview_size;
 
-            BeginScissorMode(preview_size.x, preview_size.y, preview_size.width, preview_size.height);
-            {
-                fft_render(preview_size, m);
+            if (p->fullscreen) {
+                preview_size = (Rectangle){0, 0, w, h};
+                BeginScissorMode(preview_size.x, preview_size.y, preview_size.width, preview_size.height);
+                {
+                    fft_render(preview_size, m);
+                }
+                EndScissorMode();
+
+                hud_timer -= dt;
+                if (fabsf(Vector2SumComponents(GetMouseDelta())) > 5.0f) hud_timer = HUD_TIMER_SECS;
+            } else {
+                float tracks_panel_w = w * PANEL_PERCENT;
+                float timeline_h = h * TIMELINE_PERCENT;
+                preview_size = (Rectangle){tracks_panel_w, 0, w - tracks_panel_w, h - timeline_h};
+
+                BeginScissorMode(preview_size.x, preview_size.y, preview_size.width, preview_size.height);
+                {
+                    fft_render(preview_size, m);
+                }
+                EndScissorMode();
+
+                track_panel_render(CLITERAL(Rectangle){0, 0, tracks_panel_w, preview_size.height}, dt);
+                timeline_render(CLITERAL(Rectangle){0, preview_size.height, w, timeline_h}, track);
             }
-            EndScissorMode();
 
-            track_panel_render(CLITERAL(Rectangle){0, 0, tracks_panel_w, preview_size.height}, dt);
-            timeline_render(CLITERAL(Rectangle){0, preview_size.height, w, timeline_h}, track);
+            if (hud_timer > 0.0f || !p->fullscreen) p->fullscreen ^= fullscreen_btn_render(preview_size);
         } else {
             const char* msg = NULL;
             Color c;

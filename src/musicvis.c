@@ -5,7 +5,7 @@
 
 #include "plug.h"
 
-#define LOGO_FILEPATH "./resources/logo/favicon.png"
+#define LOGO_FILEPATH "./resources/images/favicon.png"
 
 #define FACTOR 60
 
@@ -69,7 +69,7 @@ int main(void) {
     plug_init();
 
     while (!WindowShouldClose()) {
-        if (IsKeyPressed(KEY_R)) {
+        if (IsKeyPressed(KEY_F5)) {
             void* plug = plug_pre_reload();
             if (!reload_libplug()) return 1;
             plug_post_reload(plug);
