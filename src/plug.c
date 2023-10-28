@@ -38,6 +38,7 @@
 #define HUD_TIMER_SECS 2.0f
 #define HUD_ICON_SIZE 30.0f
 #define HUD_ICON_MARGIN 10.0f
+#define HUD_VOLUME_SEGMENTS 6.0f
 
 #define HSV_SATURATION 0.75f
 #define HSV_VALUE 1.0f
@@ -352,21 +353,91 @@ bool fullscreen_btn_render(Rectangle boundary) {
     return clicked;
 }
 
-void volume_slider_render(Rectangle boundary) {
-    float btn_overall_size = HUD_ICON_SIZE + HUD_ICON_MARGIN;
-    Rectangle btn = {boundary.x + boundary.width - btn_overall_size, boundary.y + boundary.height - btn_overall_size, HUD_ICON_SIZE, HUD_ICON_SIZE};
-    Rectangle slider = {btn.x + (btn_overall_size) / 2, btn.y - HUD_ICON_MARGIN - HUD_ICON_SIZE * 4, HUD_ICON_SIZE / 4, HUD_ICON_SIZE * 4};
+static float slider_get_value(float y, float hiy, float loy) {
+    if (y < hiy) y = hiy;
+    if (y > loy) y = loy;
+    y -= hiy;
+    y = 1 - y / (loy - hiy);
+    return y;
+}
 
-    Color c;
-    if (CheckCollisionPointRec(GetMousePosition(), btn)) {
-        if (IsMouseButtonPressed(MOUSE_LEFT_BUTTON)) p->volume = p->volume == 0.0f ? 0.5f : 0.0f;
-        c = COLOR_HUD_BTN_HOVEROVER;
-        DrawRectangleRounded(slider, 0.5, 30, c);
+void vert_slider_render(Rectangle boundary, float* volume, bool* expanded) {
+    Vector2 mouse = GetMousePosition();
+
+    static bool dragging = false;
+
+    Color c = COLOR_HUD_BTN_HOVEROVER;
+    float segments = HUD_VOLUME_SEGMENTS;
+
+    float slider_w = boundary.width / segments;
+    float slider_h = boundary.height / segments * 4;
+    float slider_offset = (boundary.height - segments * HUD_ICON_SIZE) / 1.5;
+    float slider_radius = HUD_ICON_SIZE / 3.5;
+    float cutoff = boundary.height - slider_h - slider_offset;
+
+    Rectangle slider_bar = {boundary.x + boundary.width / 2 - slider_w / 2, boundary.y + slider_offset, slider_w, slider_h};
+    Vector2 slider_pos = {slider_bar.x + slider_bar.width / 2, slider_bar.y + slider_bar.height * (1 - p->volume)};
+    Rectangle slider_boundary = {boundary.x, boundary.y, boundary.width, boundary.height - cutoff};
+
+    DrawRectangleRounded(slider_bar, 0.8, 40, c);
+    DrawCircleV(slider_pos, slider_radius, COLOR_ACCENT);
+
+    if (!dragging) {
+        if (CheckCollisionPointCircle(mouse, slider_pos, slider_radius)) {
+            if (IsMouseButtonPressed(MOUSE_LEFT_BUTTON)) dragging = true;
+        }
+        if (CheckCollisionPointRec(mouse, slider_boundary)) {
+            if (IsMouseButtonReleased(MOUSE_BUTTON_LEFT)) {
+                *volume = slider_get_value(mouse.y, slider_bar.y, slider_bar.y + slider_bar.height);
+            }
+        }
     } else {
-        c = COLOR_HUD_BTN_BACKGROUND;
+        *volume = slider_get_value(mouse.y, slider_bar.y, slider_bar.y + slider_bar.height);
+        if (IsMouseButtonReleased(MOUSE_BUTTON_LEFT)) dragging = false;
     }
 
+    *expanded = dragging || CheckCollisionPointRec(mouse, boundary);
+}
+
+void volume_control_render(Rectangle boundary) {
+    Vector2 mouse = GetMousePosition();
+
+    static bool expanded = false;
+    static float prev_volume = 0.5f;
+
+    float mouse_wheel_steep = 0.1f;
+    float segments = HUD_VOLUME_SEGMENTS;
+
+    float btn_offset = HUD_ICON_SIZE + HUD_ICON_MARGIN;
+    float full_margin = HUD_ICON_MARGIN * 2;
+
+    Rectangle volume_box = {
+        boundary.x + boundary.width - (HUD_ICON_SIZE + full_margin),
+        boundary.y + boundary.height - (HUD_ICON_SIZE + full_margin),
+        HUD_ICON_SIZE + full_margin,
+        HUD_ICON_SIZE + full_margin,
+    };
+
+    if (CheckCollisionPointRec(mouse, volume_box)) {
+        if (IsMouseButtonPressed(MOUSE_LEFT_BUTTON)) {
+            if (p->volume != 0.0f) prev_volume = p->volume;
+            p->volume = p->volume == 0.0f ? prev_volume : 0.0f;
+        }
+        expanded = true;
+    }
+
+    if (expanded) {
+        volume_box.height = segments * HUD_ICON_SIZE + full_margin;
+        volume_box.y -= (segments - 1) * HUD_ICON_SIZE;
+        vert_slider_render(volume_box, &p->volume, &expanded);
+        p->volume += GetMouseWheelMove() * mouse_wheel_steep;
+        if (p->volume < 0.0f) p->volume = 0.0f;
+        if (p->volume > 1.0f) p->volume = 1.0f;
+    }
+
+    Color c = expanded ? COLOR_HUD_BTN_HOVEROVER : COLOR_HUD_BTN_BACKGROUND;
     int icon_id = icon_id = (p->volume > 0.5f) ? 2 : ((p->volume == 0.0f) ? 0 : 1);
+    Rectangle btn = {boundary.x + boundary.width - btn_offset, boundary.y + boundary.height - btn_offset, HUD_ICON_SIZE, HUD_ICON_SIZE};
     Rectangle source = {p->volume_tex.width / 3 * icon_id, 0, p->volume_tex.width / 3, p->volume_tex.height};
     DrawTexturePro(p->volume_tex, source, btn, CLITERAL(Vector2){0}, 0, c);
 
@@ -384,7 +455,9 @@ void track_panel_render(Rectangle boundary, float dt) {
     float panel_pad = item_size * 0.1f;
 
     static float panel_velocity = 0.0f;
-    panel_velocity = panel_velocity * VELOCITY_DECAY + GetMouseWheelMove() * item_size * 8;
+    if (CheckCollisionPointRec(mouse, boundary)) {
+        panel_velocity = panel_velocity * VELOCITY_DECAY + GetMouseWheelMove() * item_size * 8;
+    }
 
     float max_scroll = scrollable_area - boundary.height;
     static float panel_scroll = 0.0f;
@@ -415,7 +488,7 @@ void track_panel_render(Rectangle boundary, float dt) {
 
             Color c;
             if ((int)i != p->cur_track) {
-                if (CheckCollisionPointRec(mouse, item)) {
+                if (CheckCollisionPointRec(mouse, boundary) && CheckCollisionPointRec(mouse, item)) {
                     if (IsMouseButtonPressed(MOUSE_LEFT_BUTTON)) {
                         Track* track = get_cur_track();
                         if (track) StopMusicStream(track->music);
@@ -615,8 +688,10 @@ void plug_update(void) {
                 timeline_render(CLITERAL(Rectangle){0, preview_size.height, w, timeline_h}, track);
             }
 
-            if (hud_timer > 0.0f || !p->fullscreen) p->fullscreen ^= fullscreen_btn_render(preview_size);
-            volume_slider_render(preview_size);
+            if (hud_timer > 0.0f || !p->fullscreen) {
+                p->fullscreen ^= fullscreen_btn_render(preview_size);
+                volume_control_render(preview_size);
+            }
         } else {
             const char* msg = NULL;
             Color c;
