@@ -18,6 +18,7 @@
 // Images
 #define FULLSCREEN_IMAGE_FILEPATH "./resources/images/fullscreen.png"
 #define VOLUME_IMAGE_FILEPATH "./resources/images/volume.png"
+#define MUSIC_CTRL_IMAGE_FILEPATH "./resources/images/music_ctrl.png"
 
 // Parameters
 #define N (1 << 13)
@@ -31,7 +32,7 @@
 
 #define PANEL_PERCENT 0.25f
 #define TIMELINE_PERCENT 0.1f
-#define SCROLL_PERCENT 0.03f
+#define SCROLL_PERCENT 0.04f
 #define TRACK_ITEM_PERCENT 0.2f
 #define VELOCITY_DECAY 0.9f
 
@@ -39,6 +40,7 @@
 #define HUD_ICON_SIZE 30.0f
 #define HUD_ICON_MARGIN 10.0f
 #define HUD_VOLUME_SEGMENTS 6.0f
+#define HUD_EDGE_WIDTH 2.0f
 
 #define HSV_SATURATION 0.75f
 #define HSV_VALUE 1.0f
@@ -77,6 +79,11 @@ const char* fragment_files[COUNT_FRAGMENTS] = {
     [CIRCLE_FRAGMENT] = CIRCLE_FS_FILEPATH,
 };
 
+typedef enum {
+    LOOPING = 0,
+    SHUFFLE
+} PlayMode;
+
 typedef struct {
     char* file_path;
     Music music;
@@ -93,12 +100,14 @@ typedef struct {
     int cur_track;
     bool error;
     float volume;
+    PlayMode mode;
 
     Shader circle;
     int uniform_locs[COUNT_UNIFORMS];
     bool fullscreen;
     Texture2D fullscreen_tex;
     Texture2D volume_tex;
+    Texture2D music_ctrl_tex;
 
     float in_raw[N];
     float in_wd[N];
@@ -269,6 +278,75 @@ void error_load_track(void) {
     p->error = true;
 }
 
+char* get_track_name(const char* file_path, Rectangle item, float font_size, float text_pad) {
+    const char* orig = GetFileName(file_path);
+    char* track_name = strdup(orig);
+    remove_extension(track_name);
+
+    int text_w = MeasureText(track_name, font_size);
+    while (text_w > item.width - 2 * text_pad) {
+        track_name[strlen(track_name) - 1] = '\0';
+        text_w = MeasureText(track_name, font_size);
+    }
+
+    return track_name;
+}
+
+void next_shuffle_track() {
+    ;
+    if (p->tracks.count == 1) return;
+
+    int i = p->cur_track;
+    while (i == p->cur_track) i = GetRandomValue(0, p->tracks.count - 1);
+    Track* track = get_cur_track();
+    if (track) StopMusicStream(track->music);
+    PlayMusicStream(p->tracks.items[i].music);
+    p->cur_track = i;
+}
+
+void track_render(Rectangle boundary, Rectangle item, int i) {
+    Vector2 mouse = GetMousePosition();
+
+    Color c;
+    if (i != p->cur_track) {
+        if (CheckCollisionPointRec(mouse, boundary) && CheckCollisionPointRec(mouse, item)) {
+            if (IsMouseButtonPressed(MOUSE_LEFT_BUTTON)) {
+                Track* track = get_cur_track();
+                if (track) StopMusicStream(track->music);
+                PlayMusicStream(p->tracks.items[i].music);
+                p->cur_track = i;
+            }
+            c = COLOR_TRACK_BUTTON_HOVEROVER;
+        } else {
+            c = COLOR_TRACK_BUTTON_BACKGROUND;
+        }
+    } else {
+        c = COLOR_TRACK_BUTTON_SELECTED;
+    }
+    DrawRectangleRounded(item, 0.2, 20, c);
+
+    float font_size = TRACK_NAME_FONT_SIZE + item.height * 0.1f;
+    float text_pad = item.width * 0.05f;
+    char* track_name = get_track_name(p->tracks.items[i].file_path, item, font_size, text_pad);
+    DrawText(track_name, item.x + text_pad, item.y + item.height / 2 - font_size / 2, font_size, BLACK);
+    free(track_name);
+}
+
+void tracks_render(Rectangle boundary, float item_size, float scroll_w, float panel_scroll) {
+    for (size_t i = 0; i < p->tracks.count; ++i) {
+        float panel_pad = item_size * 0.05f;
+
+        Rectangle item = {
+            .x = boundary.x + panel_pad - 2,
+            .y = i * item_size + boundary.y + panel_pad - panel_scroll,
+            .width = boundary.width - 2 * panel_pad - scroll_w,
+            .height = item_size - 2 * panel_pad,
+        };
+
+        track_render(boundary, item, (int)i);
+    }
+}
+
 bool track_exists(const char* file_path) {
     for (size_t i = 0; i < p->tracks.count; ++i) {
         Track* track = &p->tracks.items[i];
@@ -311,14 +389,14 @@ void timeline_render(Rectangle boundary, Track* track) {
     int text_w = MeasureText(time_whole, font_size);
     float pos_y = boundary.y + boundary.height / 2 - font_size / 2;
 
-    BeginScissorMode(boundary.x, boundary.y, boundary.width, boundary.height);
+    BeginScissorMode(boundary.x, boundary.y, boundary.width, boundary.height + HUD_EDGE_WIDTH);
     {
         ClearBackground(COLOR_TIMELINE_BACKGROUND);
         DrawText(time_elapsed, boundary.x + text_pad, pos_y, font_size, WHITE);
         DrawText(time_whole, boundary.x + boundary.width - text_pad - text_w, pos_y, font_size, WHITE);
 
-        DrawLineEx(start_pos, end_pos, 2, COLOR_TIMELINE_CURSOR);          // Draw Cursor
-        DrawRectangleLinesEx(boundary, 2, COLOR_TRACK_BUTTON_BACKGROUND);  // Draw Contour
+        DrawLineEx(start_pos, end_pos, 2, COLOR_TIMELINE_CURSOR);                       // Draw Cursor
+        DrawRectangleLinesEx(boundary, HUD_EDGE_WIDTH, COLOR_TRACK_BUTTON_BACKGROUND);  // Draw Contour
 
         Vector2 mouse = GetMousePosition();
         if (CheckCollisionPointRec(mouse, boundary)) {
@@ -445,108 +523,103 @@ void volume_control_render(Rectangle boundary) {
     if (track) SetMusicVolume(track->music, p->volume);
 }
 
+void handle_scroll(Rectangle boundary, bool* scrolling, float* scrolling_mouse_offset, float scrollable_area, float scroll_w, float panel_scroll) {
+    Vector2 mouse = GetMousePosition();
+
+    if (scrollable_area > boundary.height) {
+        float t = boundary.height / scrollable_area;
+        float q = panel_scroll / scrollable_area;
+        Rectangle scrollbar_boundary = {
+            .x = boundary.x + boundary.width - scroll_w - HUD_EDGE_WIDTH,
+            .y = boundary.y + boundary.height * q,
+            .width = scroll_w,
+            .height = boundary.height * t,
+        };
+        DrawRectangleRounded(scrollbar_boundary, 0.8, 20, COLOR_ACCENT);
+
+        if (*scrolling) {
+            if (IsMouseButtonReleased(MOUSE_LEFT_BUTTON)) *scrolling = false;
+        } else {
+            if (CheckCollisionPointRec(mouse, scrollbar_boundary)) {
+                if (IsMouseButtonPressed(MOUSE_LEFT_BUTTON)) {
+                    *scrolling = true;
+                    *scrolling_mouse_offset = mouse.y - scrollbar_boundary.y;
+                }
+            }
+        }
+    }
+}
+
+void music_control_render(Rectangle boundary, PlayMode mode, float scroll_w) {
+    Vector2 mouse = GetMousePosition();
+
+    int icon_cnt = 2;
+    int icon_id = mode;
+    float panel_part = (boundary.width - scroll_w - HUD_EDGE_WIDTH) / (icon_cnt * 2);
+    float btn_x = boundary.x + panel_part * (icon_id * icon_cnt + 1) - HUD_ICON_SIZE / 2;
+
+    Color c = COLOR_HUD_BTN_HOVEROVER;
+    Rectangle btn = {btn_x, boundary.y + HUD_ICON_MARGIN, HUD_ICON_SIZE, HUD_ICON_SIZE};
+    Rectangle source = {p->music_ctrl_tex.width / icon_cnt * icon_id, 0, p->music_ctrl_tex.width / icon_cnt, p->music_ctrl_tex.height};
+
+    c = p->mode == mode ? COLOR_HUD_BTN_HOVEROVER : COLOR_HUD_BTN_BACKGROUND;
+    if (CheckCollisionPointRec(mouse, btn)) {
+        if (IsMouseButtonPressed(MOUSE_LEFT_BUTTON))
+            p->mode = mode;
+        else
+            c = COLOR_HUD_BTN_HOVEROVER;
+    }
+    DrawTexturePro(p->music_ctrl_tex, source, btn, CLITERAL(Vector2){0}, 0, c);
+}
+
 void track_panel_render(Rectangle boundary, float dt) {
     Vector2 mouse = GetMousePosition();
 
+    static bool scrolling = false;
+    static float scrolling_mouse_offset = 0.0f;
+
     size_t track_count = p->tracks.count;
-    float scroll_w = boundary.width * SCROLL_PERCENT;
+    float tracks_offset = HUD_ICON_MARGIN * 2 + HUD_ICON_SIZE;
+    float scroll_w = boundary.width * SCROLL_PERCENT - HUD_EDGE_WIDTH;
     float item_size = boundary.width * TRACK_ITEM_PERCENT;
     float scrollable_area = item_size * track_count;
-    float panel_pad = item_size * 0.1f;
 
     static float panel_velocity = 0.0f;
-    if (CheckCollisionPointRec(mouse, boundary)) {
-        panel_velocity = panel_velocity * VELOCITY_DECAY + GetMouseWheelMove() * item_size * 8;
-    }
+    if (CheckCollisionPointRec(mouse, boundary)) panel_velocity = panel_velocity * VELOCITY_DECAY + GetMouseWheelMove() * item_size * 8;
 
-    float max_scroll = scrollable_area - boundary.height;
+    float max_scroll = scrollable_area - boundary.height + tracks_offset;
     static float panel_scroll = 0.0f;
     panel_scroll -= panel_velocity * dt;
 
-    static bool scrolling = false;
-    static float scrolling_mouse_offset = 0.0f;
-    if (scrolling) {
-        panel_scroll = (mouse.y - boundary.y - scrolling_mouse_offset) / boundary.height * scrollable_area;
-    }
-
+    if (scrolling) panel_scroll = (mouse.y - boundary.y - tracks_offset - scrolling_mouse_offset) / (boundary.height + tracks_offset) * scrollable_area;
     if (panel_scroll < 0) panel_scroll = 0;
     if (max_scroll < 0) max_scroll = 0;
     if (panel_scroll > max_scroll) panel_scroll = max_scroll;
 
-    // Change background color
     BeginScissorMode(boundary.x, boundary.y, boundary.width, boundary.height);
     {
         ClearBackground(COLOR_TRACK_PANEL_BACKGROUND);
 
-        for (size_t i = 0; i < track_count; ++i) {
-            Rectangle item = {
-                .x = boundary.x + panel_pad,
-                .y = i * item_size + boundary.y + panel_pad - panel_scroll,
-                .width = boundary.width - 2 * panel_pad - scroll_w,
-                .height = item_size - 2 * panel_pad,
-            };
+        music_control_render(boundary, LOOPING, scroll_w);  // Draw loop
+        music_control_render(boundary, SHUFFLE, scroll_w);  // Draw shuffle
 
-            Color c;
-            if ((int)i != p->cur_track) {
-                if (CheckCollisionPointRec(mouse, boundary) && CheckCollisionPointRec(mouse, item)) {
-                    if (IsMouseButtonPressed(MOUSE_LEFT_BUTTON)) {
-                        Track* track = get_cur_track();
-                        if (track) StopMusicStream(track->music);
-                        PlayMusicStream(p->tracks.items[i].music);
-                        p->cur_track = i;
-                    }
-                    c = COLOR_TRACK_BUTTON_HOVEROVER;
-                } else {
-                    c = COLOR_TRACK_BUTTON_BACKGROUND;
-                }
-            } else {
-                c = COLOR_TRACK_BUTTON_SELECTED;
-            }
-            DrawRectangleRounded(item, 0.2, 20, c);
-
-            const char* orig = GetFileName(p->tracks.items[i].file_path);
-            char* track_name = strdup(orig);
-            remove_extension(track_name);
-
-            float font_size = TRACK_NAME_FONT_SIZE + item.height * 0.1f;
-            float text_pad = item.width * 0.05f;
-
-            int text_w = MeasureText(track_name, font_size);
-            while (text_w > item.width - 2 * text_pad) {
-                track_name[strlen(track_name) - 1] = '\0';
-                text_w = MeasureText(track_name, font_size);
-            }
-
-            DrawText(track_name, item.x + text_pad, item.y + item.height / 2 - font_size / 2, font_size, BLACK);
-
-            if (scrollable_area > boundary.height) {
-                float t = boundary.height / scrollable_area;
-                float q = panel_scroll / scrollable_area;
-                Rectangle scrollbar_boundary = {
-                    .x = boundary.x + boundary.width - scroll_w,
-                    .y = boundary.y + boundary.height * q,
-                    .width = scroll_w,
-                    .height = boundary.height * t,
-                };
-                DrawRectangleRounded(scrollbar_boundary, 0.8, 20, COLOR_ACCENT);
-
-                if (scrolling) {
-                    if (IsMouseButtonReleased(MOUSE_LEFT_BUTTON)) {
-                        scrolling = false;
-                    }
-                } else {
-                    if (CheckCollisionPointRec(mouse, scrollbar_boundary)) {
-                        if (IsMouseButtonPressed(MOUSE_LEFT_BUTTON)) {
-                            scrolling = true;
-                            scrolling_mouse_offset = mouse.y - scrollbar_boundary.y;
-                        }
-                    }
-                }
-            }
-            free(track_name);
+        Rectangle tracks_boundary = {boundary.x, boundary.y + tracks_offset, boundary.width, boundary.height - tracks_offset};
+        BeginScissorMode(tracks_boundary.x, tracks_boundary.y, tracks_boundary.width, tracks_boundary.height);
+        {
+            handle_scroll(tracks_boundary, &scrolling, &scrolling_mouse_offset, scrollable_area, scroll_w, panel_scroll);
+            tracks_render(tracks_boundary, item_size, scroll_w, panel_scroll);
         }
+        EndScissorMode();
+
+        Vector2 edge_start_pos = {boundary.x, boundary.y + tracks_offset};
+        Vector2 edge_end_pos = {boundary.x + boundary.width, edge_start_pos.y};
+        DrawLineEx(edge_start_pos, edge_end_pos, HUD_EDGE_WIDTH, COLOR_TRACK_BUTTON_BACKGROUND);
     }
     EndScissorMode();
+
+    Vector2 edge_start_pos = {boundary.x + boundary.width, boundary.y};
+    Vector2 edge_end_pos = {edge_start_pos.x, boundary.y + boundary.height};
+    DrawLineEx(edge_start_pos, edge_end_pos, HUD_EDGE_WIDTH, COLOR_TRACK_BUTTON_BACKGROUND);
 }
 
 void plug_texture_setup() {
@@ -557,6 +630,10 @@ void plug_texture_setup() {
     Image volume_img = LoadImage(VOLUME_IMAGE_FILEPATH);
     p->volume_tex = LoadTextureFromImage(volume_img);
     UnloadImage(volume_img);
+
+    Image music_ctrl_img = LoadImage(MUSIC_CTRL_IMAGE_FILEPATH);
+    p->music_ctrl_tex = LoadTextureFromImage(music_ctrl_img);
+    UnloadImage(music_ctrl_img);
 }
 
 void plug_init() {
@@ -566,6 +643,7 @@ void plug_init() {
 
     p->cur_track = -1;
     p->volume = 0.5f;
+    p->mode = LOOPING;
 
     p->circle = LoadShader(NULL, fragment_files[CIRCLE_FRAGMENT]);
     for (Uniform i = 0; i < COUNT_UNIFORMS; i++) {
@@ -588,6 +666,7 @@ void plug_clean() {
     UnloadShader(p->circle);
     UnloadTexture(p->fullscreen_tex);
     UnloadTexture(p->volume_tex);
+    UnloadTexture(p->music_ctrl_tex);
 
     da_free(&p->tracks);
     free(p);
@@ -627,6 +706,11 @@ void plug_update(void) {
 
     if (track) {
         UpdateMusicStream(track->music);
+        if (roundf((GetMusicTimePlayed(track->music))) == roundf(GetMusicTimeLength(track->music))) {
+            if (p->mode == SHUFFLE) {
+                next_shuffle_track();
+            }
+        }
 
         if (IsKeyPressed(KEY_SPACE)) {
             if (IsMusicStreamPlaying(track->music)) {
