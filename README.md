@@ -4,7 +4,7 @@ This is a project that aims to create a simple music visualizer using the `C` pr
 
 ## Demo
 
-Uploading demo.mp4…
+https://github.com/Deezzir/MusicVis/assets/55366304/94cee108-1404-4d22-a1ef-580e94645c67
 
 Music by `Nu11` and `pilotredsun`.
 
