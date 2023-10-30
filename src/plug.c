@@ -115,6 +115,7 @@ typedef struct {
     float out_log[N];
     float out_smooth[N];
     float out_smear[N];
+    float hann[N];
 } Plug;
 
 Plug* p = NULL;
@@ -150,11 +151,9 @@ size_t fft_proccess(float dt) {
     size_t m = 0;
     float max_amp = 1.0f;
 
-    // Honn Windowing
+    // Hann Windowing
     for (size_t i = 0; i < N; ++i) {
-        float t = (float)i / (N - 1);
-        float hann = 0.5 - 0.5 * cosf(TWO_PI * t);
-        p->in_wd[i] = p->in_raw[i] * hann;
+        p->in_wd[i] = p->in_raw[i] * p->hann[i];
     }
 
     // Perform FFT
@@ -640,6 +639,11 @@ void plug_init() {
     p = malloc(sizeof(*p));
     assert(p != NULL && "ERROR: WE NEED MORE RAM");
     memset(p, 0, sizeof(*p));
+
+    for (size_t i = 0; i < N; ++i) {
+        float t = (float)i / (N - 1);
+        p->hann[i] = 0.5 - 0.5 * cosf(TWO_PI * t);
+    }
 
     p->cur_track = -1;
     p->volume = 0.5f;
