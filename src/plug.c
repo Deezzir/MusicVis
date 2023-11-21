@@ -20,8 +20,13 @@
 #define VOLUME_IMAGE_FILEPATH "./resources/images/volume.png"
 #define MUSIC_CTRL_IMAGE_FILEPATH "./resources/images/music_ctrl.png"
 
+// Controls
+#define KEY_TOGGLE_PLAY KEY_SPACE
+#define KEY_FULLSCREEN KEY_F
+#define KEY_TOGGLE_MUTE KEY_M
+
 // Parameters
-#define N (1 << 13)
+#define FFT_SIZE (1 << 13)
 #define FREQ_STEP 1.06f
 #define LOW_FREQ 1.0f
 #define SMOOTHNESS 8
@@ -109,13 +114,13 @@ typedef struct {
     Texture2D volume_tex;
     Texture2D music_ctrl_tex;
 
-    float in_raw[N];
-    float in_wd[N];
-    float complex out_raw[N];
-    float out_log[N];
-    float out_smooth[N];
-    float out_smear[N];
-    float hann[N];
+    float in_raw[FFT_SIZE];
+    float in_wd[FFT_SIZE];
+    float complex out_raw[FFT_SIZE];
+    float out_log[FFT_SIZE];
+    float out_smooth[FFT_SIZE];
+    float out_smear[FFT_SIZE];
+    float hann[FFT_SIZE];
 } Plug;
 
 Plug* p = NULL;
@@ -152,18 +157,18 @@ size_t fft_proccess(float dt) {
     float max_amp = 1.0f;
 
     // Hann Windowing
-    for (size_t i = 0; i < N; ++i) {
+    for (size_t i = 0; i < FFT_SIZE; ++i) {
         p->in_wd[i] = p->in_raw[i] * p->hann[i];
     }
 
     // Perform FFT
-    fft(p->in_wd, 1, p->out_raw, N);
+    fft(p->in_wd, 1, p->out_raw, FFT_SIZE);
 
-    for (float f = LOW_FREQ; (size_t)f < N / 2; f = ceilf(f * FREQ_STEP)) {
+    for (float f = LOW_FREQ; (size_t)f < FFT_SIZE / 2; f = ceilf(f * FREQ_STEP)) {
         float f1 = ceilf(f * FREQ_STEP);
         float ampl = 0.0f;
 
-        for (size_t q = (size_t)f; q < N / 2 && q < (size_t)f1; ++q) {
+        for (size_t q = (size_t)f; q < FFT_SIZE / 2 && q < (size_t)f1; ++q) {
             float a = amp(p->out_raw[q]);
             ampl = fmaxf(ampl, a);
         }
@@ -255,8 +260,8 @@ void fft_render(Rectangle boundary, size_t m) {
 }
 
 void fft_push(float frame) {
-    memmove(p->in_raw, p->in_raw + 1, (N - 1) * sizeof(p->in_raw[0]));
-    p->in_raw[N - 1] = frame;
+    memmove(p->in_raw, p->in_raw + 1, (FFT_SIZE - 1) * sizeof(p->in_raw[0]));
+    p->in_raw[FFT_SIZE - 1] = frame;
 }
 
 void callback(void* bufferData, unsigned int frames) {
@@ -476,6 +481,11 @@ void vert_slider_render(Rectangle boundary, float* volume, bool* expanded) {
     *expanded = dragging || CheckCollisionPointRec(mouse, boundary);
 }
 
+void mute(float* prev_volume) {
+    if (p->volume != 0.0f) *prev_volume = p->volume;
+    p->volume = p->volume == 0.0f ? *prev_volume : 0.0f;
+}
+
 void volume_control_render(Rectangle boundary) {
     Vector2 mouse = GetMousePosition();
 
@@ -497,11 +507,12 @@ void volume_control_render(Rectangle boundary) {
 
     if (CheckCollisionPointRec(mouse, volume_box)) {
         if (IsMouseButtonPressed(MOUSE_LEFT_BUTTON)) {
-            if (p->volume != 0.0f) prev_volume = p->volume;
-            p->volume = p->volume == 0.0f ? prev_volume : 0.0f;
+            mute(&prev_volume);
         }
         expanded = true;
     }
+
+    if (IsKeyPressed(KEY_TOGGLE_MUTE)) mute(&prev_volume);
 
     if (expanded) {
         volume_box.height = segments * HUD_ICON_SIZE + full_margin;
@@ -522,12 +533,19 @@ void volume_control_render(Rectangle boundary) {
     if (track) SetMusicVolume(track->music, p->volume);
 }
 
-void handle_scroll(Rectangle boundary, bool* scrolling, float* scrolling_mouse_offset, float scrollable_area, float scroll_w, float panel_scroll) {
+void handle_scroll(Rectangle boundary, bool* scrolling, float* scrolling_mouse_offset, float* panel_velocity, float scrollable_area, float scroll_w, float panel_scroll, float item_size) {
     Vector2 mouse = GetMousePosition();
 
     if (scrollable_area > boundary.height) {
         float t = boundary.height / scrollable_area;
         float q = panel_scroll / scrollable_area;
+        Rectangle scrollbar_area = {
+            .x = boundary.x + boundary.width - scroll_w - HUD_EDGE_WIDTH,
+            .y = boundary.y,
+            .width = scroll_w,
+            .height = boundary.height,
+        };
+
         Rectangle scrollbar_boundary = {
             .x = boundary.x + boundary.width - scroll_w - HUD_EDGE_WIDTH,
             .y = boundary.y + boundary.height * q,
@@ -543,6 +561,14 @@ void handle_scroll(Rectangle boundary, bool* scrolling, float* scrolling_mouse_o
                 if (IsMouseButtonPressed(MOUSE_LEFT_BUTTON)) {
                     *scrolling = true;
                     *scrolling_mouse_offset = mouse.y - scrollbar_boundary.y;
+                }
+            } else if (CheckCollisionPointRec(mouse, scrollbar_area)) {
+                if (IsMouseButtonPressed(MOUSE_LEFT_BUTTON)) {
+                    if (mouse.y < scrollbar_boundary.y) {
+                        *panel_velocity += item_size * 16;
+                    } else if (scrollbar_boundary.y + scrollbar_boundary.height < mouse.y) {
+                        *panel_velocity += -item_size * 16;
+                    }
                 }
             }
         }
@@ -605,7 +631,7 @@ void track_panel_render(Rectangle boundary, float dt) {
         Rectangle tracks_boundary = {boundary.x, boundary.y + tracks_offset, boundary.width, boundary.height - tracks_offset};
         BeginScissorMode(tracks_boundary.x, tracks_boundary.y, tracks_boundary.width, tracks_boundary.height);
         {
-            handle_scroll(tracks_boundary, &scrolling, &scrolling_mouse_offset, scrollable_area, scroll_w, panel_scroll);
+            handle_scroll(tracks_boundary, &scrolling, &scrolling_mouse_offset, &panel_velocity, scrollable_area, scroll_w, panel_scroll, item_size);
             tracks_render(tracks_boundary, item_size, scroll_w, panel_scroll);
         }
         EndScissorMode();
@@ -640,8 +666,8 @@ void plug_init() {
     assert(p != NULL && "ERROR: WE NEED MORE RAM");
     memset(p, 0, sizeof(*p));
 
-    for (size_t i = 0; i < N; ++i) {
-        float t = (float)i / (N - 1);
+    for (size_t i = 0; i < FFT_SIZE; ++i) {
+        float t = (float)i / (FFT_SIZE - 1);
         p->hann[i] = 0.5 - 0.5 * cosf(TWO_PI * t);
     }
 
@@ -716,7 +742,7 @@ void plug_update(void) {
             }
         }
 
-        if (IsKeyPressed(KEY_SPACE)) {
+        if (IsKeyPressed(KEY_TOGGLE_PLAY)) {
             if (IsMusicStreamPlaying(track->music)) {
                 PauseMusicStream(track->music);
             } else {
@@ -724,7 +750,7 @@ void plug_update(void) {
             }
         }
 
-        if (IsKeyPressed(KEY_F)) {
+        if (IsKeyPressed(KEY_FULLSCREEN)) {
             p->fullscreen = !p->fullscreen;
         }
     }
