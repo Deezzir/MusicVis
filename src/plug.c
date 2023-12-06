@@ -37,7 +37,7 @@
 
 #define PANEL_PERCENT 0.25f
 #define TIMELINE_PERCENT 0.1f
-#define SCROLL_PERCENT 0.04f
+#define SCROLL_PERCENT 0.03f
 #define TRACK_ITEM_PERCENT 0.2f
 #define VELOCITY_DECAY 0.9f
 
@@ -101,6 +101,33 @@ typedef struct {
 } Tracks;
 
 typedef struct {
+    const char* key;
+    Image value;
+} ImageItem;
+
+typedef struct {
+    ImageItem* items;
+    size_t count;
+    size_t capacity;
+} Images;
+
+typedef struct {
+    const char* key;
+    Texture2D value;
+} TextureItem;
+
+typedef struct {
+    TextureItem* items;
+    size_t count;
+    size_t capacity;
+} Textures;
+
+typedef struct {
+    Images images;
+    Textures textures;
+} Assets;
+
+typedef struct {
     Tracks tracks;
     int cur_track;
     bool error;
@@ -110,9 +137,8 @@ typedef struct {
     Shader circle;
     int uniform_locs[COUNT_UNIFORMS];
     bool fullscreen;
-    Texture2D fullscreen_tex;
-    Texture2D volume_tex;
-    Texture2D music_ctrl_tex;
+
+    Assets assets;
 
     float in_raw[FFT_SIZE];
     float in_wd[FFT_SIZE];
@@ -124,6 +150,43 @@ typedef struct {
 } Plug;
 
 Plug* p = NULL;
+
+static Image assets_image(const char* file_path) {
+    Image* image = assoc_find(p->assets.images, file_path);
+    if (image) return *image;
+
+    ImageItem item = {0};
+    item.key = file_path;
+    item.value = LoadImage(file_path);
+    da_append(&p->assets.images, item);
+    return item.value;
+}
+
+static Texture2D assets_texture(const char* file_path) {
+    Texture2D* texture = assoc_find(p->assets.textures, file_path);
+    if (texture) return *texture;
+
+    Image image = assets_image(file_path);
+
+    TextureItem item = {0};
+    item.key = file_path;
+    item.value = LoadTextureFromImage(image);
+    // GenTextureMipmaps(&item.value);
+    // SetTextureFilter(item.value, TEXTURE_FILTER_BILINEAR);
+    da_append(&p->assets.textures, item);
+    return item.value;
+}
+
+static void assets_unload() {
+    for (size_t i = 0; i < p->assets.textures.count; i++) {
+        UnloadTexture(p->assets.textures.items[i].value);
+    }
+    p->assets.textures.count = 0;
+    for (size_t i = 0; i < p->assets.images.count; i++) {
+        UnloadImage(p->assets.images.items[i].value);
+    }
+    p->assets.images.count = 0;
+}
 
 void fft_clean(void) {
     memset(p->in_raw, 0, sizeof(p->in_raw));
@@ -429,8 +492,9 @@ bool fullscreen_btn_render(Rectangle boundary) {
         icon_id = p->fullscreen ? 2 : 0;
     }
 
-    Rectangle source = {p->fullscreen_tex.width / 4 * icon_id, 0, p->fullscreen_tex.width / 4, p->fullscreen_tex.height};
-    DrawTexturePro(p->fullscreen_tex, source, btn, CLITERAL(Vector2){0}, 0, c);
+    Texture2D fullscreen_tex = assets_texture(FULLSCREEN_IMAGE_FILEPATH);
+    Rectangle source = {fullscreen_tex.width / 4 * icon_id, 0, fullscreen_tex.width / 4, fullscreen_tex.height};
+    DrawTexturePro(fullscreen_tex, source, btn, CLITERAL(Vector2){0}, 0, c);
 
     return clicked;
 }
@@ -526,8 +590,10 @@ void volume_control_render(Rectangle boundary) {
     Color c = expanded ? COLOR_HUD_BTN_HOVEROVER : COLOR_HUD_BTN_BACKGROUND;
     int icon_id = icon_id = (p->volume > 0.5f) ? 2 : ((p->volume == 0.0f) ? 0 : 1);
     Rectangle btn = {boundary.x + boundary.width - btn_offset, boundary.y + boundary.height - btn_offset, HUD_ICON_SIZE, HUD_ICON_SIZE};
-    Rectangle source = {p->volume_tex.width / 3 * icon_id, 0, p->volume_tex.width / 3, p->volume_tex.height};
-    DrawTexturePro(p->volume_tex, source, btn, CLITERAL(Vector2){0}, 0, c);
+
+    Texture2D volume_tex = assets_texture(VOLUME_IMAGE_FILEPATH);
+    Rectangle source = {volume_tex.width / 3 * icon_id, 0, volume_tex.width / 3, volume_tex.height};
+    DrawTexturePro(volume_tex, source, btn, CLITERAL(Vector2){0}, 0, c);
 
     Track* track = get_cur_track();
     if (track) SetMusicVolume(track->music, p->volume);
@@ -585,7 +651,8 @@ void music_control_render(Rectangle boundary, PlayMode mode, float scroll_w) {
 
     Color c = COLOR_HUD_BTN_HOVEROVER;
     Rectangle btn = {btn_x, boundary.y + HUD_ICON_MARGIN, HUD_ICON_SIZE, HUD_ICON_SIZE};
-    Rectangle source = {p->music_ctrl_tex.width / icon_cnt * icon_id, 0, p->music_ctrl_tex.width / icon_cnt, p->music_ctrl_tex.height};
+    Texture2D music_ctrl_tex = assets_texture(MUSIC_CTRL_IMAGE_FILEPATH);
+    Rectangle source = {music_ctrl_tex.width / icon_cnt * icon_id, 0, music_ctrl_tex.width / icon_cnt, music_ctrl_tex.height};
 
     c = p->mode == mode ? COLOR_HUD_BTN_HOVEROVER : COLOR_HUD_BTN_BACKGROUND;
     if (CheckCollisionPointRec(mouse, btn)) {
@@ -594,7 +661,7 @@ void music_control_render(Rectangle boundary, PlayMode mode, float scroll_w) {
         else
             c = COLOR_HUD_BTN_HOVEROVER;
     }
-    DrawTexturePro(p->music_ctrl_tex, source, btn, CLITERAL(Vector2){0}, 0, c);
+    DrawTexturePro(music_ctrl_tex, source, btn, CLITERAL(Vector2){0}, 0, c);
 }
 
 void track_panel_render(Rectangle boundary, float dt) {
@@ -647,20 +714,6 @@ void track_panel_render(Rectangle boundary, float dt) {
     DrawLineEx(edge_start_pos, edge_end_pos, HUD_EDGE_WIDTH, COLOR_TRACK_BUTTON_BACKGROUND);
 }
 
-void plug_texture_setup() {
-    Image fullscreen_img = LoadImage(FULLSCREEN_IMAGE_FILEPATH);
-    p->fullscreen_tex = LoadTextureFromImage(fullscreen_img);
-    UnloadImage(fullscreen_img);
-
-    Image volume_img = LoadImage(VOLUME_IMAGE_FILEPATH);
-    p->volume_tex = LoadTextureFromImage(volume_img);
-    UnloadImage(volume_img);
-
-    Image music_ctrl_img = LoadImage(MUSIC_CTRL_IMAGE_FILEPATH);
-    p->music_ctrl_tex = LoadTextureFromImage(music_ctrl_img);
-    UnloadImage(music_ctrl_img);
-}
-
 void plug_init() {
     p = malloc(sizeof(*p));
     assert(p != NULL && "ERROR: WE NEED MORE RAM");
@@ -679,8 +732,6 @@ void plug_init() {
     for (Uniform i = 0; i < COUNT_UNIFORMS; i++) {
         p->uniform_locs[i] = GetShaderLocation(p->circle, uniform_names[i]);
     }
-
-    plug_texture_setup();
 }
 
 void plug_clean() {
@@ -693,10 +744,7 @@ void plug_clean() {
         free(track->file_path);
     }
 
-    UnloadShader(p->circle);
-    UnloadTexture(p->fullscreen_tex);
-    UnloadTexture(p->volume_tex);
-    UnloadTexture(p->music_ctrl_tex);
+    assets_unload();
 
     da_free(&p->tracks);
     free(p);
@@ -707,6 +755,7 @@ Plug* plug_pre_reload(void) {
         Track* track = &p->tracks.items[i];
         DetachAudioStreamProcessor(track->music.stream, callback);
     }
+    assets_unload();
     return p;
 }
 
@@ -722,8 +771,6 @@ void plug_post_reload(Plug* prev) {
     for (Uniform i = 0; i < COUNT_UNIFORMS; i++) {
         p->uniform_locs[i] = GetShaderLocation(p->circle, uniform_names[i]);
     }
-
-    plug_texture_setup();
 }
 
 void plug_update(void) {

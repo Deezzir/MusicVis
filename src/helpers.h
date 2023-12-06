@@ -24,6 +24,24 @@
 
 #endif
 
+static void* assoc_find_(void* items, size_t item_size, size_t items_count, size_t item_value_offset, const char* key) {
+    for (size_t i = 0; i < items_count; i++) {
+        char* item_start = (char*)items + item_size * i;
+        const char* item_key = *(const char**)item_start;
+        if (strcmp(item_key, key) == 0) {
+            return item_start + item_value_offset;
+        }
+    }
+    return NULL;
+}
+
+#define assoc_find(table, key) \
+    assoc_find_((table).items, \
+    sizeof((table).items[0]), \
+    (table).count, \
+    ((char*)&(table).items[0].value - (char*)&(table).items[0]), \
+    (key))
+
 static inline float amp(float complex v) {
     float a = crealf(v);
     float b = cimagf(v);
