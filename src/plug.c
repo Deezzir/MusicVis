@@ -13,58 +13,7 @@
 
 #include "helpers.h"
 
-// Fragment Files
-#define CIRCLE_FS_FILEPATH "./resources/shaders/circle.fs"
-
-// Images
-#define FULLSCREEN_IMAGE_FILEPATH "./resources/images/fullscreen.png"
-#define VOLUME_IMAGE_FILEPATH "./resources/images/volume.png"
-#define MUSIC_OPTIONS_IMAGE_FILEPATH "./resources/images/music_options.png"
-#define MUSIC_CTRLS_IMAGE_FILEPATH "./resources/images/music_options.png"
-
-// Controls
-#define KEY_TOGGLE_PLAY KEY_SPACE
-#define KEY_FULLSCREEN KEY_F
-#define KEY_TOGGLE_MUTE KEY_M
-
-// Parameters
-#define FFT_SIZE (1 << 13)
-#define FREQ_STEP 1.06f
-#define LOW_FREQ 1.0f
-#define SMOOTHNESS 8
-#define SMEARNESS 3
-
-#define GENERAL_FONT_SIZE 50
-#define TRACK_NAME_FONT_SIZE 15
-
-#define PANEL_PERCENT 0.25f
-#define TIMELINE_PERCENT 0.1f
-#define SCROLL_PERCENT 0.03f
-#define TRACK_ITEM_PERCENT 0.2f
-#define VELOCITY_DECAY 0.9f
-
-#define HUD_TIMER_SECS 2.0f
-#define HUD_ICON_SIZE 40.0f
-#define HUD_ICON_MARGIN 10.0f
-#define HUD_VOLUME_SEGMENTS 6.0f
-#define HUD_EDGE_WIDTH 2.0f
-
-#define HSV_SATURATION 0.75f
-#define HSV_VALUE 1.0f
-
-#define TWO_PI 2 * PI
-
-#define COLOR_ACCENT ColorFromHSV(200, 0.75, 0.8)
-#define COLOR_BACKGROUND GetColor(0x000015FF)
-#define COLOR_TRACK_PANEL_BACKGROUND ColorBrightness(COLOR_BACKGROUND, -0.1)
-#define COLOR_TRACK_BUTTON_BACKGROUND ColorBrightness(COLOR_BACKGROUND, 0.15)
-#define COLOR_TRACK_BUTTON_HOVEROVER ColorBrightness(COLOR_TRACK_BUTTON_BACKGROUND, 0.15)
-#define COLOR_TRACK_BUTTON_SELECTED COLOR_ACCENT
-#define COLOR_TIMELINE_CURSOR COLOR_ACCENT
-#define COLOR_TIMELINE_BACKGROUND ColorBrightness(COLOR_BACKGROUND, -0.3)
-#define COLOR_HUD_BTN_BACKGROUND ColorBrightness(COLOR_BACKGROUND, 0.15)
-#define COLOR_HUD_BTN_HOVEROVER ColorBrightness(COLOR_HUD_BTN_BACKGROUND, 0.15)
-
+/* Types */
 typedef enum {
     CIRCLE_FRAGMENT = 0,
     COUNT_FRAGMENTS
@@ -75,16 +24,6 @@ typedef enum {
     CIRCLE_POWER_UNIFORM,
     COUNT_UNIFORMS
 } Uniform;
-
-static_assert(COUNT_UNIFORMS == 2, "Update list of uniform names");
-const char* uniform_names[COUNT_UNIFORMS] = {
-    [CIRCLE_RADIUS_UNIFORM] = "radius",
-    [CIRCLE_POWER_UNIFORM] = "power"};
-
-static_assert(COUNT_FRAGMENTS == 1, "Update list of fragment file paths");
-const char* fragment_files[COUNT_FRAGMENTS] = {
-    [CIRCLE_FRAGMENT] = CIRCLE_FS_FILEPATH,
-};
 
 typedef enum {
     LOOPING = 0,
@@ -136,9 +75,131 @@ typedef struct {
 } Assets;
 
 typedef struct {
+    float lifetime;
+    char* header;
+    char* msg;
+} Popup;
+
+#define POPUP_CAPACITY 10
+typedef struct {
+    Popup items[POPUP_CAPACITY];
+    size_t begin;
+    size_t count;
+} Popups;
+
+/* Forward Declarations */
+// Assets Management
+static Image assets_image(const char* file_path);
+static Texture2D assets_texture(const char* file_path);
+static void assets_unload(void);
+// Active UI handlers
+static int handle_btn(uint64_t id, Rectangle boundary);
+// FFT and Audio Processing
+static void fft_clean(void);
+static void fft(float in[], size_t stride, float complex out[], size_t n);
+static size_t fft_proccess(float dt);
+static void draw_texture_from_endpoints(Texture2D tex, Vector2 start_pos, Vector2 end_pos, float radius, Color c);
+static void fft_render(Rectangle boundary, size_t m);
+static void fft_push(float frame);
+static void callback(void* bufferData, unsigned int frames);
+// Track and Music Management
+static Track* get_cur_track();
+static char* get_track_name(const char* file_path, float boundary_w, float font_size, float text_pad);
+static void next_shuffle_track();
+static bool track_exists(const char* file_path);
+static void music_init(char* file_path);
+static void mute(float* prev_volume);
+// Timeline UI renderer
+static void timeline_render(Rectangle boundary, Track* track);
+// Popup Management
+static void popups_push(char* header, char* msg);
+static void popups_render(Rectangle boundary, float dt);
+// Fullscreen Button UI renderer
+#define fullscreen_btn_render(boundary) fullscreen_btn_loc(__FILE__, __LINE__, boundary)
+static int fullscreen_btn_loc(const char* file, int line, Rectangle boundary);
+// Volume Control UI renderer
+static void vert_slider_render(Rectangle boundary, float* volume, bool* expanded);
+#define volume_control_render(boundary) volume_control_loc(__FILE__, __LINE__, boundary)
+static bool volume_control_loc(const char* file, int line, Rectangle boundary);
+// Track Panel UI renderer
+#define track_render(boundary, item, i) track_render_loc(__FILE__, __LINE__, boundary, item, i)
+static void track_render_loc(const char* file, int line, Rectangle boundary, Rectangle item, int i);
+static void tracks_render(Rectangle boundary, float item_size, float scroll_w, float panel_scroll);
+static void track_panel_render(Rectangle boundary, float dt);
+static void handle_scroll(Rectangle boundary, bool* scrolling, float* scrolling_mouse_offset, float* panel_velocity, float scrollable_area, float scroll_w, float panel_scroll, float item_size);
+// Music Control UI renderer
+#define music_control_render(boundary, mode, scroll_w) music_control_loc(__FILE__, __LINE__, boundary, mode, scroll_w)
+static void music_control_loc(const char* file, int line, Rectangle boundary, PlayMode mode, float scroll_w);
+// Helpers
+static Rectangle calculate_preview(void);
+
+/* Constants */
+// Fragment Files
+#define CIRCLE_FS_FILEPATH "./resources/shaders/circle.fs"
+
+// Images
+#define FULLSCREEN_IMAGE_FILEPATH "./resources/images/fullscreen.png"
+#define VOLUME_IMAGE_FILEPATH "./resources/images/volume.png"
+#define MUSIC_OPTIONS_IMAGE_FILEPATH "./resources/images/music_options.png"
+#define MUSIC_CTRLS_IMAGE_FILEPATH "./resources/images/music_options.png"
+
+// Controls
+#define KEY_TOGGLE_PLAY KEY_SPACE
+#define KEY_FULLSCREEN KEY_F
+#define KEY_TOGGLE_MUTE KEY_M
+
+// Parameters
+#define FFT_SIZE (1 << 13)
+#define FREQ_STEP 1.06f
+#define LOW_FREQ 1.0f
+#define SMOOTHNESS 8
+#define SMEARNESS 3
+
+#define GENERAL_FONT_SIZE 50
+#define TRACK_NAME_FONT_SIZE 15
+
+#define PANEL_PERCENT 0.25f
+#define TIMELINE_PERCENT 0.1f
+#define SCROLL_PERCENT 0.03f
+#define TRACK_ITEM_PERCENT 0.2f
+#define VELOCITY_DECAY 0.9f
+
+#define HUD_TIMER_SECS 2.0f
+#define HUD_ICON_SIZE 40.0f
+#define HUD_ICON_MARGIN 10.0f
+#define HUD_VOLUME_SEGMENTS 6.0f
+#define HUD_EDGE_WIDTH 2.0f
+
+#define HSV_SATURATION 0.75f
+#define HSV_VALUE 1.0f
+
+#define TWO_PI 2 * PI
+
+#define COLOR_ACCENT ColorFromHSV(200, 0.75, 0.8)
+#define COLOR_BACKGROUND GetColor(0x000015FF)
+#define COLOR_TRACK_PANEL_BACKGROUND ColorBrightness(COLOR_BACKGROUND, -0.1)
+#define COLOR_TRACK_BUTTON_BACKGROUND ColorBrightness(COLOR_BACKGROUND, 0.17)
+#define COLOR_TRACK_BUTTON_HOVEROVER ColorBrightness(COLOR_TRACK_BUTTON_BACKGROUND, 0.15)
+#define COLOR_TRACK_BUTTON_SELECTED COLOR_ACCENT
+#define COLOR_TIMELINE_CURSOR COLOR_ACCENT
+#define COLOR_TIMELINE_BACKGROUND ColorBrightness(COLOR_BACKGROUND, -0.3)
+#define COLOR_HUD_BTN_BACKGROUND ColorBrightness(COLOR_BACKGROUND, 0.15)
+#define COLOR_HUD_BTN_HOVEROVER ColorBrightness(COLOR_HUD_BTN_BACKGROUND, 0.15)
+#define COLOR_POPUP_BACKGROUND ColorBrightness(COLOR_BACKGROUND, 0.2)
+
+static_assert(COUNT_UNIFORMS == 2, "Update list of uniform names");
+const char* uniform_names[COUNT_UNIFORMS] = {
+    [CIRCLE_RADIUS_UNIFORM] = "radius",
+    [CIRCLE_POWER_UNIFORM] = "power"};
+
+static_assert(COUNT_FRAGMENTS == 1, "Update list of fragment file paths");
+const char* fragment_files[COUNT_FRAGMENTS] = {
+    [CIRCLE_FRAGMENT] = CIRCLE_FS_FILEPATH,
+};
+
+typedef struct {
     Tracks tracks;
     int cur_track;
-    bool error;
     float volume;
     PlayMode mode;
 
@@ -309,7 +370,7 @@ static void fft_render(Rectangle boundary, size_t m) {
         float t_smooth = p->out_smooth[i];
         float t_smear = p->out_smear[i];
 
-        float hue = (float)i / m * 360;
+        float hue = 170;  //(float)i / m * 360;
         Color c = ColorFromHSV(hue, HSV_SATURATION, HSV_VALUE);
 
         float thick = roundf(cell_width / 3);
@@ -371,18 +432,13 @@ static Track* get_cur_track() {
     return &p->tracks.items[p->cur_track];
 }
 
-static void error_load_track(void) {
-    fprintf(stderr, "ERROR: Couldn't load track\n");
-    p->error = true;
-}
-
-static char* get_track_name(const char* file_path, Rectangle item, float font_size, float text_pad) {
+static char* get_track_name(const char* file_path, float boundary_w, float font_size, float text_pad) {
     const char* orig = GetFileName(file_path);
     char* track_name = strdup(orig);
     remove_extension(track_name);
 
     int text_w = MeasureText(track_name, font_size);
-    while (text_w > item.width - 2 * text_pad) {
+    while (text_w > boundary_w - 2 * text_pad) {
         track_name[strlen(track_name) - 1] = '\0';
         text_w = MeasureText(track_name, font_size);
     }
@@ -424,10 +480,15 @@ static void music_init(char* file_path) {
         p->cur_track = p->tracks.count - 1;
     } else {
         free(file_path);
-        error_load_track();
     }
 }
 
+static void mute(float* prev_volume) {
+    if (p->volume != 0.0f) *prev_volume = p->volume;
+    p->volume = p->volume == 0.0f ? *prev_volume : 0.0f;
+}
+
+/* Timeline UI renderer */
 static void timeline_render(Rectangle boundary, Track* track) {
     float played = GetMusicTimePlayed(track->music);
     float len = GetMusicTimeLength(track->music);
@@ -465,7 +526,6 @@ static void timeline_render(Rectangle boundary, Track* track) {
 }
 
 /* Fullscreen Button UI renderer */
-#define fullscreen_btn_render(boundary) fullscreen_btn_loc(__FILE__, __LINE__, boundary)
 static int fullscreen_btn_loc(const char* file, int line, Rectangle boundary) {
     uint64_t id = DJB2_INIT;
     id = djb2(id, file, strlen(file));
@@ -528,12 +588,6 @@ static void vert_slider_render(Rectangle boundary, float* volume, bool* expanded
     *expanded = dragging || CheckCollisionPointRec(mouse, boundary);
 }
 
-static void mute(float* prev_volume) {
-    if (p->volume != 0.0f) *prev_volume = p->volume;
-    p->volume = p->volume == 0.0f ? *prev_volume : 0.0f;
-}
-
-#define volume_control_render(boundary) volume_control_loc(__FILE__, __LINE__, boundary)
 static bool volume_control_loc(const char* file, int line, Rectangle boundary) {
     Vector2 mouse = GetMousePosition();
 
@@ -585,7 +639,6 @@ static bool volume_control_loc(const char* file, int line, Rectangle boundary) {
 }
 
 /* Track Panel UI renderer */
-#define track_render(boundary, item, i) track_render_loc(__FILE__, __LINE__, boundary, item, i)
 static void track_render_loc(const char* file, int line, Rectangle boundary, Rectangle item, int i) {
     uint64_t id = DJB2_INIT;
     id = djb2(id, file, strlen(file));
@@ -614,7 +667,7 @@ static void track_render_loc(const char* file, int line, Rectangle boundary, Rec
 
     float font_size = TRACK_NAME_FONT_SIZE + item.height * 0.1f;
     float text_pad = item.width * 0.05f;
-    char* track_name = get_track_name(p->tracks.items[i].file_path, item, font_size, text_pad);
+    char* track_name = get_track_name(p->tracks.items[i].file_path, item.width, font_size, text_pad);
     DrawText(track_name, item.x + text_pad, item.y + item.height / 2 - font_size / 2, font_size, BLACK);
     free(track_name);
 }
@@ -676,31 +729,6 @@ static void handle_scroll(Rectangle boundary, bool* scrolling, float* scrolling_
     }
 }
 
-#define music_control_render(boundary, mode, scroll_w) music_control_loc(__FILE__, __LINE__, boundary, mode, scroll_w)
-static void music_control_loc(const char* file, int line, Rectangle boundary, PlayMode mode, float scroll_w) {
-    int icon_cnt = 2;
-    int icon_id = mode;
-    float panel_part = (boundary.width - scroll_w - HUD_EDGE_WIDTH) / (icon_cnt * 2);
-    float btn_x = boundary.x + panel_part * (icon_id * icon_cnt + 1) - HUD_ICON_SIZE / 2;
-
-    Color c = COLOR_HUD_BTN_HOVEROVER;
-    Rectangle btn = {btn_x, boundary.y + HUD_ICON_MARGIN, HUD_ICON_SIZE, HUD_ICON_SIZE};
-    Texture2D music_ctrl_tex = assets_texture(MUSIC_OPTIONS_IMAGE_FILEPATH);
-    Rectangle source = {music_ctrl_tex.width / icon_cnt * icon_id, 0, music_ctrl_tex.width / icon_cnt, music_ctrl_tex.height};
-
-    c = p->mode == mode ? COLOR_HUD_BTN_HOVEROVER : COLOR_HUD_BTN_BACKGROUND;
-
-    uint64_t id = DJB2_INIT;
-    id = djb2(id, file, strlen(file));
-    id = djb2(id, &line, sizeof(line));
-    int state = handle_btn(id, btn);
-
-    if (state & BTN_HOVER) c = COLOR_HUD_BTN_HOVEROVER;
-    if (state & BTN_CLICKED) p->mode = mode;
-
-    DrawTexturePro(music_ctrl_tex, source, btn, CLITERAL(Vector2){0}, 0, c);
-}
-
 static void track_panel_render(Rectangle boundary, float dt) {
     Vector2 mouse = GetMousePosition();
 
@@ -751,6 +779,31 @@ static void track_panel_render(Rectangle boundary, float dt) {
     DrawLineEx(edge_start_pos, edge_end_pos, HUD_EDGE_WIDTH, COLOR_TRACK_BUTTON_BACKGROUND);
 }
 
+/* Music Control UI renderer */
+static void music_control_loc(const char* file, int line, Rectangle boundary, PlayMode mode, float scroll_w) {
+    int icon_cnt = 2;
+    int icon_id = mode;
+    float panel_part = (boundary.width - scroll_w - HUD_EDGE_WIDTH) / (icon_cnt * 2);
+    float btn_x = boundary.x + panel_part * (icon_id * icon_cnt + 1) - HUD_ICON_SIZE / 2;
+
+    Color c = COLOR_HUD_BTN_HOVEROVER;
+    Rectangle btn = {btn_x, boundary.y + HUD_ICON_MARGIN, HUD_ICON_SIZE, HUD_ICON_SIZE};
+    Texture2D music_ctrl_tex = assets_texture(MUSIC_OPTIONS_IMAGE_FILEPATH);
+    Rectangle source = {music_ctrl_tex.width / icon_cnt * icon_id, 0, music_ctrl_tex.width / icon_cnt, music_ctrl_tex.height};
+
+    c = p->mode == mode ? COLOR_HUD_BTN_HOVEROVER : COLOR_HUD_BTN_BACKGROUND;
+
+    uint64_t id = DJB2_INIT;
+    id = djb2(id, file, strlen(file));
+    id = djb2(id, &line, sizeof(line));
+    int state = handle_btn(id, btn);
+
+    if (state & BTN_HOVER) c = COLOR_HUD_BTN_HOVEROVER;
+    if (state & BTN_CLICKED) p->mode = mode;
+
+    DrawTexturePro(music_ctrl_tex, source, btn, CLITERAL(Vector2){0}, 0, c);
+}
+
 static Rectangle calculate_preview() {
     int w = GetScreenWidth();
     int h = GetScreenHeight();
@@ -795,9 +848,13 @@ void plug_clean() {
         free(track->file_path);
     }
 
+    UnloadShader(p->circle);
+
     assets_unload();
 
     da_free(&p->tracks);
+    da_free(&p->assets.images);
+    da_free(&p->assets.textures);
     free(p);
 }
 
