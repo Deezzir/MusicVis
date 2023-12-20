@@ -19,7 +19,8 @@
 // Images
 #define FULLSCREEN_IMAGE_FILEPATH "./resources/images/fullscreen.png"
 #define VOLUME_IMAGE_FILEPATH "./resources/images/volume.png"
-#define MUSIC_CTRL_IMAGE_FILEPATH "./resources/images/music_ctrl.png"
+#define MUSIC_OPTIONS_IMAGE_FILEPATH "./resources/images/music_options.png"
+#define MUSIC_CTRLS_IMAGE_FILEPATH "./resources/images/music_options.png"
 
 // Controls
 #define KEY_TOGGLE_PLAY KEY_SPACE
@@ -489,14 +490,6 @@ static int fullscreen_btn_loc(const char* file, int line, Rectangle boundary) {
 }
 
 /* Volume Control UI renderer */
-static float slider_get_value(float y, float hiy, float loy) {
-    if (y < hiy) y = hiy;
-    if (y > loy) y = loy;
-    y -= hiy;
-    y = 1 - y / (loy - hiy);
-    return y;
-}
-
 static void vert_slider_render(Rectangle boundary, float* volume, bool* expanded) {
     Vector2 mouse = GetMousePosition();
 
@@ -692,7 +685,7 @@ static void music_control_loc(const char* file, int line, Rectangle boundary, Pl
 
     Color c = COLOR_HUD_BTN_HOVEROVER;
     Rectangle btn = {btn_x, boundary.y + HUD_ICON_MARGIN, HUD_ICON_SIZE, HUD_ICON_SIZE};
-    Texture2D music_ctrl_tex = assets_texture(MUSIC_CTRL_IMAGE_FILEPATH);
+    Texture2D music_ctrl_tex = assets_texture(MUSIC_OPTIONS_IMAGE_FILEPATH);
     Rectangle source = {music_ctrl_tex.width / icon_cnt * icon_id, 0, music_ctrl_tex.width / icon_cnt, music_ctrl_tex.height};
 
     c = p->mode == mode ? COLOR_HUD_BTN_HOVEROVER : COLOR_HUD_BTN_BACKGROUND;
@@ -756,6 +749,19 @@ static void track_panel_render(Rectangle boundary, float dt) {
     Vector2 edge_start_pos = {boundary.x + boundary.width, boundary.y};
     Vector2 edge_end_pos = {edge_start_pos.x, boundary.y + boundary.height};
     DrawLineEx(edge_start_pos, edge_end_pos, HUD_EDGE_WIDTH, COLOR_TRACK_BUTTON_BACKGROUND);
+}
+
+static Rectangle calculate_preview() {
+    int w = GetScreenWidth();
+    int h = GetScreenHeight();
+
+    if (p->fullscreen) {
+        return (Rectangle){0, 0, w, h};
+    } else {
+        float tracks_panel_w = w * PANEL_PERCENT;
+        float timeline_h = h * TIMELINE_PERCENT;
+        return (Rectangle){tracks_panel_w, 0, w - tracks_panel_w, h - timeline_h};
+    }
 }
 
 /* Plugin API */
@@ -822,6 +828,7 @@ void plug_update(void) {
     int w = GetScreenWidth();
     int h = GetScreenHeight();
     float dt = GetFrameTime();
+
     static float hud_timer = HUD_TIMER_SECS;
     static int fullscreen_btn_state = 0;
     static bool volume_expanded = false;
@@ -869,31 +876,20 @@ void plug_update(void) {
 
         if (track) {
             size_t m = fft_proccess(dt);
-            Rectangle preview_size;
+            Rectangle preview_size = calculate_preview();
+
+            BeginScissorMode(preview_size.x, preview_size.y, preview_size.width, preview_size.height);
+            {
+                fft_render(preview_size, m);
+            }
+            EndScissorMode();
 
             if (p->fullscreen) {
-                preview_size = (Rectangle){0, 0, w, h};
-                BeginScissorMode(preview_size.x, preview_size.y, preview_size.width, preview_size.height);
-                {
-                    fft_render(preview_size, m);
-                }
-                EndScissorMode();
-
                 if (!(fullscreen_btn_state & BTN_HOVER) && !volume_expanded) hud_timer -= dt;
-                if (fabsf(Vector2SumComponents(GetMouseDelta())) > 0.0f) hud_timer = HUD_TIMER_SECS;
+                if (fabsf(vec2_sum(GetMouseDelta())) > 0.0f) hud_timer = HUD_TIMER_SECS;
             } else {
-                float tracks_panel_w = w * PANEL_PERCENT;
-                float timeline_h = h * TIMELINE_PERCENT;
-                preview_size = (Rectangle){tracks_panel_w, 0, w - tracks_panel_w, h - timeline_h};
-
-                BeginScissorMode(preview_size.x, preview_size.y, preview_size.width, preview_size.height);
-                {
-                    fft_render(preview_size, m);
-                }
-                EndScissorMode();
-
-                track_panel_render(CLITERAL(Rectangle){0, 0, tracks_panel_w, preview_size.height}, dt);
-                timeline_render(CLITERAL(Rectangle){0, preview_size.height, w, timeline_h}, track);
+                track_panel_render(CLITERAL(Rectangle){0, 0, w * PANEL_PERCENT, preview_size.height}, dt);
+                timeline_render(CLITERAL(Rectangle){0, preview_size.height, w, h * TIMELINE_PERCENT}, track);
             }
 
             if (hud_timer > 0.0f || !p->fullscreen) {

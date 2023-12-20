@@ -55,8 +55,16 @@ void remove_extension(char* filename) {
     }
 }
 
-float Vector2SumComponents(Vector2 vec) {
+float vec2_sum(Vector2 vec) {
     return vec.x + vec.y;
+}
+
+float slider_get_value(float y, float hiy, float loy) {
+    if (y < hiy) y = hiy;
+    if (y > loy) y = loy;
+    y -= hiy;
+    y = 1 - y / (loy - hiy);
+    return y;
 }
 
 #define DJB2_INIT 5381
