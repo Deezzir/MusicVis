@@ -26,9 +26,17 @@ typedef enum {
 } Uniform;
 
 typedef enum {
-    LOOPING = 0,
+    REPEAT = 0,
+    REPEAT_ONCE,
     SHUFFLE
 } PlayMode;
+
+typedef enum {
+    TRACK_PREV = 0,
+    TRACK_NEXT,
+    TRACK_PLAY,
+    TRACK_PAUSE,
+} MusicControl;
 
 typedef enum {
     BTN_NONE,
@@ -107,11 +115,15 @@ static void fft_render(Rectangle boundary, size_t m);
 static void fft_push(float frame);
 static void callback(void* bufferData, unsigned int frames);
 // Track and Music Management
-static Track* get_cur_track();
-static void next_shuffle_track();
+static Track* track_get_cur();
+static void track_next_shuffle();
 static bool track_exists(const char* file_path);
+static void track_prev();
+static void track_next();
 static void music_init(char* file_path);
-static void mute(float* prev_volume);
+static void music_play_pause();
+static bool music_is_playing();
+static void music_mute(float* prev_volume);
 // Timeline UI renderer
 static void timeline_render(Rectangle boundary, Track* track);
 // Popup Management
@@ -131,8 +143,10 @@ static void tracks_render(Rectangle boundary, float item_size, float scroll_w, f
 static void track_panel_render(Rectangle boundary, float dt);
 static void handle_scroll(Rectangle boundary, bool* scrolling, float* scrolling_mouse_offset, float* panel_velocity, float scrollable_area, float scroll_w, float panel_scroll, float item_size);
 // Music Control UI renderer
-#define music_control_render(boundary, mode, scroll_w) music_control_loc(__FILE__, __LINE__, boundary, mode, scroll_w)
-static void music_control_loc(const char* file, int line, Rectangle boundary, PlayMode mode, float scroll_w);
+#define music_options_render(boundary, mode, icon_pos) music_options_loc(__FILE__, __LINE__, boundary, mode, icon_pos)
+static void music_options_loc(const char* file, int line, Rectangle boundary, PlayMode icon, int icon_pos);
+#define music_control_render(boundary, icon, icon_pos) music_control_loc(__FILE__, __LINE__, boundary, icon, icon_pos)
+static void music_control_loc(const char* file, int line, Rectangle boundary, MusicControl icon, int icon_pos);
 // Helpers
 static void str_fit_width(char* text, float width, float font_size, float text_pad);
 static char* get_track_name(const char* file_path);
@@ -146,7 +160,7 @@ static Rectangle calculate_preview(void);
 #define FULLSCREEN_IMAGE_FILEPATH "./resources/images/fullscreen.png"
 #define VOLUME_IMAGE_FILEPATH "./resources/images/volume.png"
 #define MUSIC_OPTIONS_IMAGE_FILEPATH "./resources/images/music_options.png"
-#define MUSIC_CTRLS_IMAGE_FILEPATH "./resources/images/music_options.png"
+#define MUSIC_CTRLS_IMAGE_FILEPATH "./resources/images/music_cntrls.png"
 
 // Controls
 #define KEY_TOGGLE_PLAY KEY_SPACE
@@ -439,18 +453,40 @@ static void callback(void* bufferData, unsigned int frames) {
 }
 
 /* Track and Music Management */
-static Track* get_cur_track() {
+static Track* track_get_cur() {
     if (p->cur_track < 0 || (size_t)p->cur_track >= p->tracks.count) return NULL;
     return &p->tracks.items[p->cur_track];
 }
 
-static void next_shuffle_track() {
-    ;
+static void music_play_pause() {
+    Track* track = track_get_cur();
+    if (track) {
+        if (IsMusicStreamPlaying(track->music)) {
+            PauseMusicStream(track->music);
+        } else {
+            ResumeMusicStream(track->music);
+        }
+    }
+}
+
+static bool music_is_playing() {
+    Track* track = track_get_cur();
+    if (track) return IsMusicStreamPlaying(track->music);
+    return false;
+}
+
+static void track_next() {
+}
+
+static void track_prev() {
+}
+
+static void track_next_shuffle() {
     if (p->tracks.count == 1) return;
 
     int i = p->cur_track;
     while (i == p->cur_track) i = GetRandomValue(0, p->tracks.count - 1);
-    Track* track = get_cur_track();
+    Track* track = track_get_cur();
     if (track) StopMusicStream(track->music);
     PlayMusicStream(p->tracks.items[i].music);
     p->cur_track = i;
@@ -480,7 +516,7 @@ static void music_init(char* file_path) {
     }
 }
 
-static void mute(float* prev_volume) {
+static void music_mute(float* prev_volume) {
     if (p->volume != 0.0f) *prev_volume = p->volume;
     p->volume = p->volume == 0.0f ? *prev_volume : 0.0f;
 }
@@ -672,7 +708,7 @@ static bool volume_control_loc(const char* file, int line, Rectangle boundary) {
     id = djb2(id, file, strlen(file));
     id = djb2(id, &line, sizeof(line));
 
-    if (IsKeyPressed(KEY_TOGGLE_MUTE) || handle_btn(id, btn) & BTN_CLICKED) mute(&prev_volume);
+    if (IsKeyPressed(KEY_TOGGLE_MUTE) || handle_btn(id, btn) & BTN_CLICKED) music_mute(&prev_volume);
 
     Color c = expanded ? COLOR_HUD_BTN_HOVEROVER : COLOR_HUD_BTN_BACKGROUND;
     int icon_id = icon_id = (p->volume > 0.5f) ? 2 : ((p->volume == 0.0f) ? 0 : 1);
@@ -681,7 +717,7 @@ static bool volume_control_loc(const char* file, int line, Rectangle boundary) {
     Rectangle source = {volume_tex.width / 3 * icon_id, 0, volume_tex.width / 3, volume_tex.height};
     DrawTexturePro(volume_tex, source, btn, CLITERAL(Vector2){0}, 0, c);
 
-    Track* track = get_cur_track();
+    Track* track = track_get_cur();
     if (track) SetMusicVolume(track->music, p->volume);
 
     return expanded;
@@ -704,7 +740,7 @@ static void track_render_loc(const char* file, int line, Rectangle boundary, Rec
             c = COLOR_TRACK_BUTTON_BACKGROUND;
         }
         if (state & BTN_CLICKED) {
-            Track* track = get_cur_track();
+            Track* track = track_get_cur();
             if (track) StopMusicStream(track->music);
             PlayMusicStream(p->tracks.items[i].music);
             p->cur_track = i;
@@ -786,7 +822,7 @@ static void track_panel_render(Rectangle boundary, float dt) {
     static float scrolling_mouse_offset = 0.0f;
 
     size_t track_count = p->tracks.count;
-    float tracks_offset = HUD_ICON_MARGIN * 2 + HUD_ICON_SIZE;
+    float tracks_offset = HUD_ICON_MARGIN * 3 + 2 * HUD_ICON_SIZE;
     float scroll_w = boundary.width * SCROLL_PERCENT - HUD_EDGE_WIDTH;
     float item_size = boundary.width * TRACK_ITEM_PERCENT;
     float scrollable_area = item_size * track_count;
@@ -807,8 +843,11 @@ static void track_panel_render(Rectangle boundary, float dt) {
     {
         ClearBackground(COLOR_TRACK_PANEL_BACKGROUND);
 
-        music_control_render(boundary, LOOPING, scroll_w);  // Draw loop
-        music_control_render(boundary, SHUFFLE, scroll_w);  // Draw shuffle
+        music_options_render(boundary, p->mode < SHUFFLE ? p->mode : REPEAT, 0);              // Draw repeat
+        music_options_render(boundary, SHUFFLE, 1);                                           // Draw shuffle
+        music_control_render(boundary, TRACK_PREV, 0);                                     // Draw prev
+        music_control_render(boundary, music_is_playing() ? TRACK_PAUSE : TRACK_PLAY, 1);  // Draw pause
+        music_control_render(boundary, TRACK_NEXT, 2);                                     // Draw next
 
         Rectangle tracks_boundary = {boundary.x, boundary.y + tracks_offset, boundary.width, boundary.height - tracks_offset};
         BeginScissorMode(tracks_boundary.x, tracks_boundary.y, tracks_boundary.width, tracks_boundary.height);
@@ -830,18 +869,22 @@ static void track_panel_render(Rectangle boundary, float dt) {
 }
 
 /* Music Control UI renderer */
-static void music_control_loc(const char* file, int line, Rectangle boundary, PlayMode mode, float scroll_w) {
+static void music_options_loc(const char* file, int line, Rectangle boundary, PlayMode icon, int icon_pos) {
     int icon_cnt = 2;
-    int icon_id = mode;
-    float panel_part = (boundary.width - scroll_w - HUD_EDGE_WIDTH) / (icon_cnt * 2);
-    float btn_x = boundary.x + panel_part * (icon_id * icon_cnt + 1) - HUD_ICON_SIZE / 2;
+    int total_icon_cnt = 3;
+    int icon_id = icon;
+    // float panel_part = (boundary.width - HUD_EDGE_WIDTH) / (icon_cnt * 2);
+    // float btn_x = boundary.x + panel_part * (icon_id * icon_cnt + 1) - HUD_ICON_SIZE / 2;
+
+    float gap_size = (boundary.width - HUD_EDGE_WIDTH - icon_cnt * HUD_ICON_SIZE) / (icon_cnt + 1);
+    float btn_x = boundary.x + icon_pos * HUD_ICON_SIZE + (icon_pos + 1) * gap_size;
 
     Color c = COLOR_HUD_BTN_HOVEROVER;
     Rectangle btn = {btn_x, boundary.y + HUD_ICON_MARGIN, HUD_ICON_SIZE, HUD_ICON_SIZE};
-    Texture2D music_ctrl_tex = assets_texture(MUSIC_OPTIONS_IMAGE_FILEPATH);
-    Rectangle source = {music_ctrl_tex.width / icon_cnt * icon_id, 0, music_ctrl_tex.width / icon_cnt, music_ctrl_tex.height};
+    Texture2D music_opts_tex = assets_texture(MUSIC_OPTIONS_IMAGE_FILEPATH);
+    Rectangle source = {music_opts_tex.width / total_icon_cnt * icon_id, 0, music_opts_tex.width / total_icon_cnt, music_opts_tex.height};
 
-    c = p->mode == mode ? COLOR_HUD_BTN_HOVEROVER : COLOR_HUD_BTN_BACKGROUND;
+    c = p->mode == icon ? COLOR_HUD_BTN_HOVEROVER : COLOR_HUD_BTN_BACKGROUND;
 
     uint64_t id = DJB2_INIT;
     id = djb2(id, file, strlen(file));
@@ -849,7 +892,51 @@ static void music_control_loc(const char* file, int line, Rectangle boundary, Pl
     int state = handle_btn(id, btn);
 
     if (state & BTN_HOVER) c = COLOR_HUD_BTN_HOVEROVER;
-    if (state & BTN_CLICKED) p->mode = mode;
+    if (state & BTN_CLICKED) {
+        if (p->mode == REPEAT && icon == REPEAT) {
+            p->mode = REPEAT_ONCE;
+        } else if (p->mode == REPEAT_ONCE && icon == REPEAT_ONCE) {
+            p->mode = REPEAT;
+        } else {
+            p->mode = icon;
+        }
+    }
+
+    DrawTexturePro(music_opts_tex, source, btn, CLITERAL(Vector2){0}, 0, c);
+}
+
+static void music_control_loc(const char* file, int line, Rectangle boundary, MusicControl icon, int icon_pos) {
+    int icon_cnt = 3;
+    int total_icon_cnt = 4;
+    int icon_id = icon;
+    float gap_size = (boundary.width - HUD_EDGE_WIDTH - icon_cnt * HUD_ICON_SIZE) / (icon_cnt + 1);
+    float btn_x = boundary.x + icon_pos * HUD_ICON_SIZE + (icon_pos + 1) * gap_size;
+
+    Color c = COLOR_HUD_BTN_BACKGROUND;
+    Rectangle btn = {btn_x, boundary.y + 2 * HUD_ICON_MARGIN + HUD_ICON_SIZE, HUD_ICON_SIZE, HUD_ICON_SIZE};
+    Texture2D music_ctrl_tex = assets_texture(MUSIC_CTRLS_IMAGE_FILEPATH);
+    Rectangle source = {music_ctrl_tex.width / total_icon_cnt * icon_id, 0, music_ctrl_tex.width / total_icon_cnt, music_ctrl_tex.height};
+
+    uint64_t id = DJB2_INIT;
+    id = djb2(id, file, strlen(file));
+    id = djb2(id, &line, sizeof(line));
+    int state = handle_btn(id, btn);
+
+    if (state & BTN_HOVER) c = COLOR_HUD_BTN_HOVEROVER;
+    if (state & BTN_CLICKED) {
+        switch (icon) {
+            case TRACK_PREV:
+                track_prev();
+                break;
+            case TRACK_PLAY:
+            case TRACK_PAUSE:
+                music_play_pause();
+                break;
+            case TRACK_NEXT:
+                track_next();
+                break;
+        }
+    }
 
     DrawTexturePro(music_ctrl_tex, source, btn, CLITERAL(Vector2){0}, 0, c);
 }
@@ -897,7 +984,7 @@ void plug_init() {
 
     p->cur_track = -1;
     p->volume = 0.5f;
-    p->mode = LOOPING;
+    p->mode = REPEAT;
 
     p->circle = LoadShader(NULL, fragment_files[CIRCLE_FRAGMENT]);
     for (Uniform i = 0; i < COUNT_UNIFORMS; i++) {
@@ -957,23 +1044,17 @@ void plug_update(void) {
     static int fullscreen_btn_state = 0;
     static bool volume_expanded = false;
 
-    Track* track = get_cur_track();
+    Track* track = track_get_cur();
 
     if (track) {
         UpdateMusicStream(track->music);
         if (roundf((GetMusicTimePlayed(track->music))) == roundf(GetMusicTimeLength(track->music))) {
             if (p->mode == SHUFFLE) {
-                next_shuffle_track();
+                track_next_shuffle();
             }
         }
 
-        if (IsKeyPressed(KEY_TOGGLE_PLAY)) {
-            if (IsMusicStreamPlaying(track->music)) {
-                PauseMusicStream(track->music);
-            } else {
-                ResumeMusicStream(track->music);
-            }
-        }
+        if (IsKeyPressed(KEY_TOGGLE_PLAY)) music_play_pause();
 
         if (IsKeyPressed(KEY_FULLSCREEN)) {
             p->fullscreen = !p->fullscreen;
@@ -991,7 +1072,7 @@ void plug_update(void) {
         }
         UnloadDroppedFiles(files);
 
-        if(get_cur_track() == NULL && p->tracks.count > 0) {
+        if (track_get_cur() == NULL && p->tracks.count > 0) {
             PlayMusicStream(p->tracks.items[0].music);
             p->cur_track = 0;
         }
