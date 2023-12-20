@@ -35,12 +35,12 @@ static void* assoc_find_(void* items, size_t item_size, size_t items_count, size
     return NULL;
 }
 
-#define assoc_find(table, key) \
-    assoc_find_((table).items, \
-    sizeof((table).items[0]), \
-    (table).count, \
-    ((char*)&(table).items[0].value - (char*)&(table).items[0]), \
-    (key))
+#define assoc_find(table, key)                                               \
+    assoc_find_((table).items,                                               \
+                sizeof((table).items[0]),                                    \
+                (table).count,                                               \
+                ((char*)&(table).items[0].value - (char*)&(table).items[0]), \
+                (key))
 
 static inline float amp(float complex v) {
     float a = crealf(v);
@@ -57,4 +57,14 @@ void remove_extension(char* filename) {
 
 float Vector2SumComponents(Vector2 vec) {
     return vec.x + vec.y;
+}
+
+#define DJB2_INIT 5381
+
+uint64_t djb2(uint64_t hash, const void* buf, size_t len) {
+    const uint8_t* bytes = buf;
+    for (size_t i = 0; i < len; ++i) {
+        hash = hash * 33 + bytes[i];
+    }
+    return hash;
 }

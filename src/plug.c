@@ -6,6 +6,7 @@
 #include <raylib.h>
 #include <raymath.h>
 #include <rlgl.h>
+#include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -33,7 +34,7 @@
 #define SMEARNESS 3
 
 #define GENERAL_FONT_SIZE 50
-#define TRACK_NAME_FONT_SIZE 18
+#define TRACK_NAME_FONT_SIZE 15
 
 #define PANEL_PERCENT 0.25f
 #define TIMELINE_PERCENT 0.1f
@@ -42,7 +43,7 @@
 #define VELOCITY_DECAY 0.9f
 
 #define HUD_TIMER_SECS 2.0f
-#define HUD_ICON_SIZE 30.0f
+#define HUD_ICON_SIZE 40.0f
 #define HUD_ICON_MARGIN 10.0f
 #define HUD_VOLUME_SEGMENTS 6.0f
 #define HUD_EDGE_WIDTH 2.0f
@@ -54,7 +55,7 @@
 
 #define COLOR_ACCENT ColorFromHSV(200, 0.75, 0.8)
 #define COLOR_BACKGROUND GetColor(0x000015FF)
-#define COLOR_TRACK_PANEL_BACKGROUND ColorBrightness(COLOR_BACKGROUND, -0.2)
+#define COLOR_TRACK_PANEL_BACKGROUND ColorBrightness(COLOR_BACKGROUND, -0.1)
 #define COLOR_TRACK_BUTTON_BACKGROUND ColorBrightness(COLOR_BACKGROUND, 0.15)
 #define COLOR_TRACK_BUTTON_HOVEROVER ColorBrightness(COLOR_TRACK_BUTTON_BACKGROUND, 0.15)
 #define COLOR_TRACK_BUTTON_SELECTED COLOR_ACCENT
@@ -88,6 +89,12 @@ typedef enum {
     LOOPING = 0,
     SHUFFLE
 } PlayMode;
+
+typedef enum {
+    BTN_NONE,
+    BTN_HOVER,
+    BTN_CLICKED
+} ButtonState;
 
 typedef struct {
     char* file_path;
@@ -137,6 +144,7 @@ typedef struct {
     Shader circle;
     int uniform_locs[COUNT_UNIFORMS];
     bool fullscreen;
+    uint64_t active_btn_id;
 
     Assets assets;
 
@@ -149,8 +157,9 @@ typedef struct {
     float hann[FFT_SIZE];
 } Plug;
 
-Plug* p = NULL;
+static Plug* p = NULL;
 
+/* Assets Management */
 static Image assets_image(const char* file_path) {
     Image* image = assoc_find(p->assets.images, file_path);
     if (image) return *image;
@@ -171,8 +180,8 @@ static Texture2D assets_texture(const char* file_path) {
     TextureItem item = {0};
     item.key = file_path;
     item.value = LoadTextureFromImage(image);
-    // GenTextureMipmaps(&item.value);
-    // SetTextureFilter(item.value, TEXTURE_FILTER_BILINEAR);
+    GenTextureMipmaps(&item.value);
+    SetTextureFilter(item.value, TEXTURE_FILTER_BILINEAR);
     da_append(&p->assets.textures, item);
     return item.value;
 }
@@ -188,7 +197,27 @@ static void assets_unload() {
     p->assets.images.count = 0;
 }
 
-void fft_clean(void) {
+/* Active UI handlers */
+static int handle_btn(uint64_t id, Rectangle boundary) {
+    Vector2 mouse = GetMousePosition();
+    int hover = CheckCollisionPointRec(mouse, boundary);
+    int clicked = 0;
+
+    if (p->active_btn_id == 0) {
+        if (hover && IsMouseButtonPressed(MOUSE_BUTTON_LEFT))
+            p->active_btn_id = id;
+    } else if (p->active_btn_id == id) {
+        if (IsMouseButtonReleased(MOUSE_BUTTON_LEFT)) {
+            p->active_btn_id = 0;
+            if (hover) clicked = 1;
+        }
+    }
+
+    return (clicked << 1) | hover;
+}
+
+/* FFT and Audio Processing */
+static void fft_clean(void) {
     memset(p->in_raw, 0, sizeof(p->in_raw));
     memset(p->in_wd, 0, sizeof(p->in_wd));
     memset(p->out_raw, 0, sizeof(p->out_raw));
@@ -197,7 +226,7 @@ void fft_clean(void) {
     memset(p->out_smear, 0, sizeof(p->out_smear));
 }
 
-void fft(float in[], size_t stride, float complex out[], size_t n) {
+static void fft(float in[], size_t stride, float complex out[], size_t n) {
     if (n == 1) {
         out[0] = in[0];
         return;
@@ -215,7 +244,7 @@ void fft(float in[], size_t stride, float complex out[], size_t n) {
     }
 }
 
-size_t fft_proccess(float dt) {
+static size_t fft_proccess(float dt) {
     size_t m = 0;
     float max_amp = 1.0f;
 
@@ -249,7 +278,7 @@ size_t fft_proccess(float dt) {
     return m;
 }
 
-void draw_texture_from_endpoints(Texture2D tex, Vector2 start_pos, Vector2 end_pos, float radius, Color c) {
+static void draw_texture_from_endpoints(Texture2D tex, Vector2 start_pos, Vector2 end_pos, float radius, Color c) {
     Rectangle dest, source;
 
     dest.width = 2 * radius;
@@ -269,7 +298,7 @@ void draw_texture_from_endpoints(Texture2D tex, Vector2 start_pos, Vector2 end_p
     DrawTexturePro(tex, source, dest, CLITERAL(Vector2){0}, 0, c);
 }
 
-void fft_render(Rectangle boundary, size_t m) {
+static void fft_render(Rectangle boundary, size_t m) {
     float h = boundary.height;
     float w = boundary.width;
     float cell_width = roundf(w / m);
@@ -322,12 +351,12 @@ void fft_render(Rectangle boundary, size_t m) {
     }
 }
 
-void fft_push(float frame) {
+static void fft_push(float frame) {
     memmove(p->in_raw, p->in_raw + 1, (FFT_SIZE - 1) * sizeof(p->in_raw[0]));
     p->in_raw[FFT_SIZE - 1] = frame;
 }
 
-void callback(void* bufferData, unsigned int frames) {
+static void callback(void* bufferData, unsigned int frames) {
     float(*fs)[2] = bufferData;
 
     for (size_t i = 0; i < frames; ++i) {
@@ -335,17 +364,18 @@ void callback(void* bufferData, unsigned int frames) {
     }
 }
 
-Track* get_cur_track() {
+/* Track and Music Management */
+static Track* get_cur_track() {
     if (p->cur_track < 0 || (size_t)p->cur_track >= p->tracks.count) return NULL;
     return &p->tracks.items[p->cur_track];
 }
 
-void error_load_track(void) {
+static void error_load_track(void) {
     fprintf(stderr, "ERROR: Couldn't load track\n");
     p->error = true;
 }
 
-char* get_track_name(const char* file_path, Rectangle item, float font_size, float text_pad) {
+static char* get_track_name(const char* file_path, Rectangle item, float font_size, float text_pad) {
     const char* orig = GetFileName(file_path);
     char* track_name = strdup(orig);
     remove_extension(track_name);
@@ -359,7 +389,7 @@ char* get_track_name(const char* file_path, Rectangle item, float font_size, flo
     return track_name;
 }
 
-void next_shuffle_track() {
+static void next_shuffle_track() {
     ;
     if (p->tracks.count == 1) return;
 
@@ -371,50 +401,7 @@ void next_shuffle_track() {
     p->cur_track = i;
 }
 
-void track_render(Rectangle boundary, Rectangle item, int i) {
-    Vector2 mouse = GetMousePosition();
-
-    Color c;
-    if (i != p->cur_track) {
-        if (CheckCollisionPointRec(mouse, boundary) && CheckCollisionPointRec(mouse, item)) {
-            if (IsMouseButtonPressed(MOUSE_LEFT_BUTTON)) {
-                Track* track = get_cur_track();
-                if (track) StopMusicStream(track->music);
-                PlayMusicStream(p->tracks.items[i].music);
-                p->cur_track = i;
-            }
-            c = COLOR_TRACK_BUTTON_HOVEROVER;
-        } else {
-            c = COLOR_TRACK_BUTTON_BACKGROUND;
-        }
-    } else {
-        c = COLOR_TRACK_BUTTON_SELECTED;
-    }
-    DrawRectangleRounded(item, 0.2, 20, c);
-
-    float font_size = TRACK_NAME_FONT_SIZE + item.height * 0.1f;
-    float text_pad = item.width * 0.05f;
-    char* track_name = get_track_name(p->tracks.items[i].file_path, item, font_size, text_pad);
-    DrawText(track_name, item.x + text_pad, item.y + item.height / 2 - font_size / 2, font_size, BLACK);
-    free(track_name);
-}
-
-void tracks_render(Rectangle boundary, float item_size, float scroll_w, float panel_scroll) {
-    for (size_t i = 0; i < p->tracks.count; ++i) {
-        float panel_pad = item_size * 0.05f;
-
-        Rectangle item = {
-            .x = boundary.x + panel_pad - 2,
-            .y = i * item_size + boundary.y + panel_pad - panel_scroll,
-            .width = boundary.width - 2 * panel_pad - scroll_w,
-            .height = item_size - 2 * panel_pad,
-        };
-
-        track_render(boundary, item, (int)i);
-    }
-}
-
-bool track_exists(const char* file_path) {
+static bool track_exists(const char* file_path) {
     for (size_t i = 0; i < p->tracks.count; ++i) {
         Track* track = &p->tracks.items[i];
         if (strcmp(track->file_path, file_path) == 0) return true;
@@ -422,7 +409,7 @@ bool track_exists(const char* file_path) {
     return false;
 }
 
-void music_init(char* file_path) {
+static void music_init(char* file_path) {
     Music music = LoadMusicStream(file_path);
 
     if (IsMusicReady(music)) {
@@ -440,7 +427,7 @@ void music_init(char* file_path) {
     }
 }
 
-void timeline_render(Rectangle boundary, Track* track) {
+static void timeline_render(Rectangle boundary, Track* track) {
     float played = GetMusicTimePlayed(track->music);
     float len = GetMusicTimeLength(track->music);
     float progress = played / len * GetScreenWidth();
@@ -476,19 +463,21 @@ void timeline_render(Rectangle boundary, Track* track) {
     EndScissorMode();
 }
 
-bool fullscreen_btn_render(Rectangle boundary) {
+/* Fullscreen Button UI renderer */
+#define fullscreen_btn_render(boundary) fullscreen_btn_loc(__FILE__, __LINE__, boundary)
+static int fullscreen_btn_loc(const char* file, int line, Rectangle boundary) {
+    uint64_t id = DJB2_INIT;
+    id = djb2(id, file, strlen(file));
+    id = djb2(id, &line, sizeof(line));
+
     int icon_id;
-    bool clicked = false;
     Rectangle btn = {boundary.x + boundary.width - (HUD_ICON_SIZE + HUD_ICON_MARGIN), boundary.y + HUD_ICON_MARGIN, HUD_ICON_SIZE, HUD_ICON_SIZE};
+    int state = handle_btn(id, btn);
 
-    Color c;
-    if (CheckCollisionPointRec(GetMousePosition(), btn)) {
-        if (IsMouseButtonPressed(MOUSE_LEFT_BUTTON)) clicked = true;
-
-        c = COLOR_HUD_BTN_HOVEROVER;
+    Color c = state & BTN_HOVER ? COLOR_HUD_BTN_HOVEROVER : COLOR_HUD_BTN_BACKGROUND;
+    if (state & BTN_HOVER) {
         icon_id = p->fullscreen ? 3 : 1;
     } else {
-        c = COLOR_HUD_BTN_BACKGROUND;
         icon_id = p->fullscreen ? 2 : 0;
     }
 
@@ -496,9 +485,10 @@ bool fullscreen_btn_render(Rectangle boundary) {
     Rectangle source = {fullscreen_tex.width / 4 * icon_id, 0, fullscreen_tex.width / 4, fullscreen_tex.height};
     DrawTexturePro(fullscreen_tex, source, btn, CLITERAL(Vector2){0}, 0, c);
 
-    return clicked;
+    return state;
 }
 
+/* Volume Control UI renderer */
 static float slider_get_value(float y, float hiy, float loy) {
     if (y < hiy) y = hiy;
     if (y > loy) y = loy;
@@ -507,7 +497,7 @@ static float slider_get_value(float y, float hiy, float loy) {
     return y;
 }
 
-void vert_slider_render(Rectangle boundary, float* volume, bool* expanded) {
+static void vert_slider_render(Rectangle boundary, float* volume, bool* expanded) {
     Vector2 mouse = GetMousePosition();
 
     static bool dragging = false;
@@ -517,7 +507,7 @@ void vert_slider_render(Rectangle boundary, float* volume, bool* expanded) {
 
     float slider_w = boundary.width / segments;
     float slider_h = boundary.height / segments * 4;
-    float slider_offset = (boundary.height - segments * HUD_ICON_SIZE) / 1.5;
+    float slider_offset = (boundary.height - segments * HUD_ICON_SIZE) / 1.2;
     float slider_radius = HUD_ICON_SIZE / 3.5;
     float cutoff = boundary.height - slider_h - slider_offset;
 
@@ -545,12 +535,13 @@ void vert_slider_render(Rectangle boundary, float* volume, bool* expanded) {
     *expanded = dragging || CheckCollisionPointRec(mouse, boundary);
 }
 
-void mute(float* prev_volume) {
+static void mute(float* prev_volume) {
     if (p->volume != 0.0f) *prev_volume = p->volume;
     p->volume = p->volume == 0.0f ? *prev_volume : 0.0f;
 }
 
-void volume_control_render(Rectangle boundary) {
+#define volume_control_render(boundary) volume_control_loc(__FILE__, __LINE__, boundary)
+static bool volume_control_loc(const char* file, int line, Rectangle boundary) {
     Vector2 mouse = GetMousePosition();
 
     static bool expanded = false;
@@ -568,15 +559,9 @@ void volume_control_render(Rectangle boundary) {
         HUD_ICON_SIZE + full_margin,
         HUD_ICON_SIZE + full_margin,
     };
+    Rectangle btn = {boundary.x + boundary.width - btn_offset, boundary.y + boundary.height - btn_offset, HUD_ICON_SIZE, HUD_ICON_SIZE};
 
-    if (CheckCollisionPointRec(mouse, volume_box)) {
-        if (IsMouseButtonPressed(MOUSE_LEFT_BUTTON)) {
-            mute(&prev_volume);
-        }
-        expanded = true;
-    }
-
-    if (IsKeyPressed(KEY_TOGGLE_MUTE)) mute(&prev_volume);
+    if (CheckCollisionPointRec(mouse, volume_box)) expanded = true;
 
     if (expanded) {
         volume_box.height = segments * HUD_ICON_SIZE + full_margin;
@@ -587,9 +572,14 @@ void volume_control_render(Rectangle boundary) {
         if (p->volume > 1.0f) p->volume = 1.0f;
     }
 
+    uint64_t id = DJB2_INIT;
+    id = djb2(id, file, strlen(file));
+    id = djb2(id, &line, sizeof(line));
+
+    if (IsKeyPressed(KEY_TOGGLE_MUTE) || handle_btn(id, btn) & BTN_CLICKED) mute(&prev_volume);
+
     Color c = expanded ? COLOR_HUD_BTN_HOVEROVER : COLOR_HUD_BTN_BACKGROUND;
     int icon_id = icon_id = (p->volume > 0.5f) ? 2 : ((p->volume == 0.0f) ? 0 : 1);
-    Rectangle btn = {boundary.x + boundary.width - btn_offset, boundary.y + boundary.height - btn_offset, HUD_ICON_SIZE, HUD_ICON_SIZE};
 
     Texture2D volume_tex = assets_texture(VOLUME_IMAGE_FILEPATH);
     Rectangle source = {volume_tex.width / 3 * icon_id, 0, volume_tex.width / 3, volume_tex.height};
@@ -597,9 +587,61 @@ void volume_control_render(Rectangle boundary) {
 
     Track* track = get_cur_track();
     if (track) SetMusicVolume(track->music, p->volume);
+
+    return expanded;
 }
 
-void handle_scroll(Rectangle boundary, bool* scrolling, float* scrolling_mouse_offset, float* panel_velocity, float scrollable_area, float scroll_w, float panel_scroll, float item_size) {
+/* Track Panel UI renderer */
+#define track_render(boundary, item, i) track_render_loc(__FILE__, __LINE__, boundary, item, i)
+static void track_render_loc(const char* file, int line, Rectangle boundary, Rectangle item, int i) {
+    uint64_t id = DJB2_INIT;
+    id = djb2(id, file, strlen(file));
+    id = djb2(id, &line, sizeof(line));
+
+    Color c;
+    if (i != p->cur_track) {
+        uint64_t item_id = djb2(id, &i, sizeof(i));
+        int state = handle_btn(item_id, GetCollisionRec(boundary, item));
+
+        if (state & BTN_HOVER) {
+            c = COLOR_TRACK_BUTTON_HOVEROVER;
+        } else {
+            c = COLOR_TRACK_BUTTON_BACKGROUND;
+        }
+        if (state & BTN_CLICKED) {
+            Track* track = get_cur_track();
+            if (track) StopMusicStream(track->music);
+            PlayMusicStream(p->tracks.items[i].music);
+            p->cur_track = i;
+        }
+    } else {
+        c = COLOR_TRACK_BUTTON_SELECTED;
+    }
+    DrawRectangleRounded(item, 0.2, 20, c);
+
+    float font_size = TRACK_NAME_FONT_SIZE + item.height * 0.1f;
+    float text_pad = item.width * 0.05f;
+    char* track_name = get_track_name(p->tracks.items[i].file_path, item, font_size, text_pad);
+    DrawText(track_name, item.x + text_pad, item.y + item.height / 2 - font_size / 2, font_size, BLACK);
+    free(track_name);
+}
+
+static void tracks_render(Rectangle boundary, float item_size, float scroll_w, float panel_scroll) {
+    for (size_t i = 0; i < p->tracks.count; ++i) {
+        float panel_pad = item_size * 0.05f;
+
+        Rectangle item = {
+            .x = boundary.x + panel_pad - 2,
+            .y = i * item_size + boundary.y + panel_pad - panel_scroll,
+            .width = boundary.width - 2 * panel_pad - scroll_w,
+            .height = item_size - 2 * panel_pad,
+        };
+
+        track_render(boundary, item, (int)i);
+    }
+}
+
+static void handle_scroll(Rectangle boundary, bool* scrolling, float* scrolling_mouse_offset, float* panel_velocity, float scrollable_area, float scroll_w, float panel_scroll, float item_size) {
     Vector2 mouse = GetMousePosition();
 
     if (scrollable_area > boundary.height) {
@@ -641,9 +683,8 @@ void handle_scroll(Rectangle boundary, bool* scrolling, float* scrolling_mouse_o
     }
 }
 
-void music_control_render(Rectangle boundary, PlayMode mode, float scroll_w) {
-    Vector2 mouse = GetMousePosition();
-
+#define music_control_render(boundary, mode, scroll_w) music_control_loc(__FILE__, __LINE__, boundary, mode, scroll_w)
+static void music_control_loc(const char* file, int line, Rectangle boundary, PlayMode mode, float scroll_w) {
     int icon_cnt = 2;
     int icon_id = mode;
     float panel_part = (boundary.width - scroll_w - HUD_EDGE_WIDTH) / (icon_cnt * 2);
@@ -655,16 +696,19 @@ void music_control_render(Rectangle boundary, PlayMode mode, float scroll_w) {
     Rectangle source = {music_ctrl_tex.width / icon_cnt * icon_id, 0, music_ctrl_tex.width / icon_cnt, music_ctrl_tex.height};
 
     c = p->mode == mode ? COLOR_HUD_BTN_HOVEROVER : COLOR_HUD_BTN_BACKGROUND;
-    if (CheckCollisionPointRec(mouse, btn)) {
-        if (IsMouseButtonPressed(MOUSE_LEFT_BUTTON))
-            p->mode = mode;
-        else
-            c = COLOR_HUD_BTN_HOVEROVER;
-    }
+
+    uint64_t id = DJB2_INIT;
+    id = djb2(id, file, strlen(file));
+    id = djb2(id, &line, sizeof(line));
+    int state = handle_btn(id, btn);
+
+    if (state & BTN_HOVER) c = COLOR_HUD_BTN_HOVEROVER;
+    if (state & BTN_CLICKED) p->mode = mode;
+
     DrawTexturePro(music_ctrl_tex, source, btn, CLITERAL(Vector2){0}, 0, c);
 }
 
-void track_panel_render(Rectangle boundary, float dt) {
+static void track_panel_render(Rectangle boundary, float dt) {
     Vector2 mouse = GetMousePosition();
 
     static bool scrolling = false;
@@ -714,6 +758,7 @@ void track_panel_render(Rectangle boundary, float dt) {
     DrawLineEx(edge_start_pos, edge_end_pos, HUD_EDGE_WIDTH, COLOR_TRACK_BUTTON_BACKGROUND);
 }
 
+/* Plugin API */
 void plug_init() {
     p = malloc(sizeof(*p));
     assert(p != NULL && "ERROR: WE NEED MORE RAM");
@@ -774,10 +819,12 @@ void plug_post_reload(Plug* prev) {
 }
 
 void plug_update(void) {
-    int w = GetRenderWidth();
-    int h = GetRenderHeight();
+    int w = GetScreenWidth();
+    int h = GetScreenHeight();
     float dt = GetFrameTime();
     static float hud_timer = HUD_TIMER_SECS;
+    static int fullscreen_btn_state = 0;
+    static bool volume_expanded = false;
 
     Track* track = get_cur_track();
 
@@ -832,8 +879,8 @@ void plug_update(void) {
                 }
                 EndScissorMode();
 
-                hud_timer -= dt;
-                if (fabsf(Vector2SumComponents(GetMouseDelta())) > 5.0f) hud_timer = HUD_TIMER_SECS;
+                if (!(fullscreen_btn_state & BTN_HOVER) && !volume_expanded) hud_timer -= dt;
+                if (fabsf(Vector2SumComponents(GetMouseDelta())) > 0.0f) hud_timer = HUD_TIMER_SECS;
             } else {
                 float tracks_panel_w = w * PANEL_PERCENT;
                 float timeline_h = h * TIMELINE_PERCENT;
@@ -850,8 +897,9 @@ void plug_update(void) {
             }
 
             if (hud_timer > 0.0f || !p->fullscreen) {
-                p->fullscreen ^= fullscreen_btn_render(preview_size);
-                volume_control_render(preview_size);
+                fullscreen_btn_state = fullscreen_btn_render(preview_size);
+                volume_expanded = volume_control_render(preview_size);
+                p->fullscreen ^= (bool)(fullscreen_btn_state & BTN_CLICKED);
             }
         } else {
             const char* msg = NULL;
