@@ -80,11 +80,15 @@ typedef struct {
     char* msg;
 } Popup;
 
-#define POPUP_CAPACITY 10
+#define POPUP_CAPACITY 15
+#define POPUP_GET(p, index) (assert(index < (p)->count), &(p)->items[((p)->begin + (index)) % POPUP_CAPACITY])
+#define POPUP_FIRST(p) POPUP_GET((p), 0)
+#define POPUP_LAST(p) POPUP_GET((p), (p)->count - 1)
 typedef struct {
     Popup items[POPUP_CAPACITY];
     size_t begin;
     size_t count;
+    float slide;
 } Popups;
 
 /* Forward Declarations */
@@ -104,7 +108,6 @@ static void fft_push(float frame);
 static void callback(void* bufferData, unsigned int frames);
 // Track and Music Management
 static Track* get_cur_track();
-static char* get_track_name(const char* file_path, float boundary_w, float font_size, float text_pad);
 static void next_shuffle_track();
 static bool track_exists(const char* file_path);
 static void music_init(char* file_path);
@@ -112,8 +115,8 @@ static void mute(float* prev_volume);
 // Timeline UI renderer
 static void timeline_render(Rectangle boundary, Track* track);
 // Popup Management
-static void popups_push(char* header, char* msg);
-static void popups_render(Rectangle boundary, float dt);
+static void popups_push(Popups* ps, char* header, char* msg);
+static void popups_render(Popups* ps, Rectangle boundary, float dt);
 // Fullscreen Button UI renderer
 #define fullscreen_btn_render(boundary) fullscreen_btn_loc(__FILE__, __LINE__, boundary)
 static int fullscreen_btn_loc(const char* file, int line, Rectangle boundary);
@@ -131,6 +134,8 @@ static void handle_scroll(Rectangle boundary, bool* scrolling, float* scrolling_
 #define music_control_render(boundary, mode, scroll_w) music_control_loc(__FILE__, __LINE__, boundary, mode, scroll_w)
 static void music_control_loc(const char* file, int line, Rectangle boundary, PlayMode mode, float scroll_w);
 // Helpers
+static void str_fit_width(char* text, float width, float font_size, float text_pad);
+static char* get_track_name(const char* file_path);
 static Rectangle calculate_preview(void);
 
 /* Constants */
@@ -169,6 +174,12 @@ static Rectangle calculate_preview(void);
 #define HUD_ICON_MARGIN 10.0f
 #define HUD_VOLUME_SEGMENTS 6.0f
 #define HUD_EDGE_WIDTH 2.0f
+#define HUD_POPUP_LIFETIME_SECS 2.5f
+#define HUD_POPUP_SLIDEIN_SECS 0.1f
+#define HUD_POPUP_WIDTH 300.0f
+#define HUD_POPUP_HEIGHT 50.0f
+#define HUD_POPUP_PAD 10.0f
+#define HUD_POPUP_FONT_SIZE 15.0f
 
 #define HSV_SATURATION 0.75f
 #define HSV_VALUE 1.0f
@@ -209,6 +220,7 @@ typedef struct {
     uint64_t active_btn_id;
 
     Assets assets;
+    Popups popups;
 
     float in_raw[FFT_SIZE];
     float in_wd[FFT_SIZE];
@@ -432,20 +444,6 @@ static Track* get_cur_track() {
     return &p->tracks.items[p->cur_track];
 }
 
-static char* get_track_name(const char* file_path, float boundary_w, float font_size, float text_pad) {
-    const char* orig = GetFileName(file_path);
-    char* track_name = strdup(orig);
-    remove_extension(track_name);
-
-    int text_w = MeasureText(track_name, font_size);
-    while (text_w > boundary_w - 2 * text_pad) {
-        track_name[strlen(track_name) - 1] = '\0';
-        text_w = MeasureText(track_name, font_size);
-    }
-
-    return track_name;
-}
-
 static void next_shuffle_track() {
     ;
     if (p->tracks.count == 1) return;
@@ -472,13 +470,12 @@ static void music_init(char* file_path) {
     if (IsMusicReady(music)) {
         SetMusicVolume(music, p->volume);
         AttachAudioStreamProcessor(music.stream, callback);
-        PlayMusicStream(music);
-
-        da_append(&p->tracks, (CLITERAL(Track){
-                                  .file_path = file_path,
-                                  .music = music}));
-        p->cur_track = p->tracks.count - 1;
+        da_append(&p->tracks, (CLITERAL(Track){.file_path = file_path, .music = music}));
     } else {
+        char* msg = get_track_name(file_path);
+        str_fit_width(msg, HUD_POPUP_WIDTH, HUD_POPUP_FONT_SIZE, HUD_POPUP_PAD);
+        char* header = strdup("Could not load the track");
+        popups_push(&p->popups, header, msg);
         free(file_path);
     }
 }
@@ -523,6 +520,58 @@ static void timeline_render(Rectangle boundary, Track* track) {
         }
     }
     EndScissorMode();
+}
+
+/* Popup Management */
+static void popups_push(Popups* ps, char* header, char* msg) {
+    if (ps->count < POPUP_CAPACITY) {
+        if (ps->begin == 0) {
+            ps->begin = POPUP_CAPACITY - 1;
+        } else {
+            ps->begin -= 1;
+        }
+
+        ps->count += 1;
+
+        POPUP_FIRST(ps)->header = header;
+        POPUP_FIRST(ps)->msg = msg;
+        ps->slide += HUD_POPUP_SLIDEIN_SECS;
+        POPUP_FIRST(ps)->lifetime = HUD_POPUP_LIFETIME_SECS + ps->slide;
+    }
+}
+
+static void popups_render(Popups* ps, Rectangle boundary, float dt) {
+    if (ps->slide > 0) ps->slide -= dt;
+    if (ps->slide < 0) ps->slide = 0;
+
+    for (size_t i = 0; i < ps->count; i++) {
+        Popup* it = POPUP_GET(ps, i);
+        it->lifetime -= dt;
+
+        float t = it->lifetime / HUD_POPUP_LIFETIME_SECS;
+        float alpha = t >= 0.5f ? 1.0f : t / 0.5f;
+        float q = ps->slide / HUD_POPUP_SLIDEIN_SECS;
+
+        Rectangle popup = {
+            .x = boundary.x + HUD_POPUP_PAD,
+            .y = boundary.y + HUD_POPUP_PAD + (i + q) * (HUD_POPUP_HEIGHT + HUD_POPUP_PAD),
+            .width = HUD_POPUP_WIDTH,
+            .height = HUD_POPUP_HEIGHT,
+        };
+
+        DrawRectangleRounded(popup, 0.3, 20, ColorAlpha(COLOR_POPUP_BACKGROUND, alpha));
+        Color c = ColorAlpha(WHITE, alpha);
+        int width = MeasureText(it->header, HUD_POPUP_FONT_SIZE + 2);
+        DrawText(it->header, popup.x + popup.width / 2 - width / 2, popup.y + HUD_POPUP_PAD / 2, HUD_POPUP_FONT_SIZE + 1, c);
+        width = MeasureText(it->msg, HUD_POPUP_FONT_SIZE);
+        DrawText(it->msg, popup.x + popup.width / 2 - width / 2, popup.y + HUD_POPUP_PAD / 2 + HUD_POPUP_FONT_SIZE, HUD_POPUP_FONT_SIZE, c);
+    }
+
+    while (ps->count > 0 && POPUP_LAST(ps)->lifetime <= 0) {
+        free(POPUP_LAST(ps)->msg);
+        free(POPUP_LAST(ps)->header);
+        ps->count -= 1;
+    }
 }
 
 /* Fullscreen Button UI renderer */
@@ -667,7 +716,8 @@ static void track_render_loc(const char* file, int line, Rectangle boundary, Rec
 
     float font_size = TRACK_NAME_FONT_SIZE + item.height * 0.1f;
     float text_pad = item.width * 0.05f;
-    char* track_name = get_track_name(p->tracks.items[i].file_path, item.width, font_size, text_pad);
+    char* track_name = get_track_name(p->tracks.items[i].file_path);
+    str_fit_width(track_name, item.width, font_size, text_pad);
     DrawText(track_name, item.x + text_pad, item.y + item.height / 2 - font_size / 2, font_size, BLACK);
     free(track_name);
 }
@@ -804,6 +854,23 @@ static void music_control_loc(const char* file, int line, Rectangle boundary, Pl
     DrawTexturePro(music_ctrl_tex, source, btn, CLITERAL(Vector2){0}, 0, c);
 }
 
+/* Helpers */
+static void str_fit_width(char* text, float width, float font_size, float text_pad) {
+    int text_w = MeasureText(text, font_size);
+    while (text_w > width - 2 * text_pad) {
+        text[strlen(text) - 1] = '\0';
+        text_w = MeasureText(text, font_size);
+    }
+}
+
+static char* get_track_name(const char* file_path) {
+    const char* orig = GetFileName(file_path);
+    char* track_name = strdup(orig);
+    remove_extension(track_name);
+
+    return track_name;
+}
+
 static Rectangle calculate_preview() {
     int w = GetScreenWidth();
     int h = GetScreenHeight();
@@ -918,13 +985,16 @@ void plug_update(void) {
         for (size_t i = 0; i < files.count; ++i) {
             if (track_exists(files.paths[i])) continue;
             char* mus_file_path = strdup(files.paths[i]);
-
-            Track* cur_track = get_cur_track();
-            if (cur_track) StopMusicStream(cur_track->music);
+            assert(mus_file_path != NULL && "ERROR: WE NEED MORE RAM");
 
             music_init(mus_file_path);
         }
         UnloadDroppedFiles(files);
+
+        if(get_cur_track() == NULL && p->tracks.count > 0) {
+            PlayMusicStream(p->tracks.items[0].music);
+            p->cur_track = 0;
+        }
     }
 
     BeginDrawing();
@@ -932,17 +1002,18 @@ void plug_update(void) {
         ClearBackground(COLOR_BACKGROUND);
 
         if (track) {
-            size_t m = fft_proccess(dt);
+            size_t m = fft_proccess(GetFrameTime());
             Rectangle preview_size = calculate_preview();
 
             BeginScissorMode(preview_size.x, preview_size.y, preview_size.width, preview_size.height);
             {
                 fft_render(preview_size, m);
+                popups_render(&p->popups, preview_size, GetFrameTime());
             }
             EndScissorMode();
 
             if (p->fullscreen) {
-                if (!(fullscreen_btn_state & BTN_HOVER) && !volume_expanded) hud_timer -= dt;
+                if (!(fullscreen_btn_state & BTN_HOVER) && !volume_expanded) hud_timer -= GetFrameTime();
                 if (fabsf(vec2_sum(GetMouseDelta())) > 0.0f) hud_timer = HUD_TIMER_SECS;
             } else {
                 track_panel_render(CLITERAL(Rectangle){0, 0, w * PANEL_PERCENT, preview_size.height}, dt);
@@ -955,19 +1026,12 @@ void plug_update(void) {
                 p->fullscreen ^= (bool)(fullscreen_btn_state & BTN_CLICKED);
             }
         } else {
-            const char* msg = NULL;
-            Color c;
-
-            if (p->error) {
-                msg = "Couldn't load Music";
-                c = RED;
-            } else {
-                msg = "Drag&Drop Music";
-                c = WHITE;
-            }
+            const char* msg = "Drag&Drop Music";
+            Color c = WHITE;
 
             int width = MeasureText(msg, GENERAL_FONT_SIZE);
             DrawText(msg, w / 2 - width / 2, h / 2 - GENERAL_FONT_SIZE / 2, GENERAL_FONT_SIZE, c);
+            popups_render(&p->popups, CLITERAL(Rectangle){.x = 0, .y = 0, .width = w, .height = h}, GetFrameTime());
         }
     }
     EndDrawing();
