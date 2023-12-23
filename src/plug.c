@@ -874,7 +874,7 @@ static void track_panel_render(Rectangle boundary, float dt) {
 static void music_options_loc(const char* file, int line, Rectangle boundary, PlayMode icon, int icon_pos) {
     int icon_cnt = 2;
     int total_icon_cnt = 3;
-    int icon_id = icon > MODE_REPEAT1 ? icon - MODE_REPEAT1 : icon - MODE_REPEAT; // Get to 0, 1, 2
+    int icon_id = icon > MODE_REPEAT1 ? icon - MODE_REPEAT1 : icon - MODE_REPEAT;  // Get to 0, 1, 2
 
     // float panel_part = (boundary.width - HUD_EDGE_WIDTH) / (icon_cnt * 2);
     // float btn_x = boundary.x + panel_part * (icon_id * icon_cnt + 1) - HUD_ICON_SIZE / 2;
@@ -888,7 +888,7 @@ static void music_options_loc(const char* file, int line, Rectangle boundary, Pl
     if (p->mode & icon) {
         c = COLOR_HUD_BTN_HOVEROVER;
         Rectangle rec = {btn.x - HUD_ICON_MARGIN / 2, btn.y - HUD_ICON_MARGIN / 2, btn.width + HUD_ICON_MARGIN, btn.height + HUD_ICON_MARGIN};
-        DrawRectangleRounded(rec, 0.3, 20, COLOR_TRACK_BUTTON_SELECTED); 
+        DrawRectangleRounded(rec, 0.3, 20, COLOR_TRACK_BUTTON_SELECTED);
     }
 
     uint64_t id = DJB2_INIT;
@@ -984,6 +984,21 @@ static void draw_icon(const char* file_path, int icon_id, int icon_cnt, Rectangl
     DrawTexturePro(tex, source, dest, CLITERAL(Vector2){0}, 0, c);
 }
 
+static void load_tracks(FilePathList files) {
+    for (size_t i = 0; i < files.count; ++i) {
+        if (DirectoryExists(files.paths[i])) {
+            FilePathList dir_files = LoadDirectoryFiles(files.paths[i]);
+            load_tracks(dir_files);
+            UnloadDirectoryFiles(dir_files);
+        } else {
+            if (track_exists(files.paths[i])) continue;
+            char* mus_file_path = strdup(files.paths[i]);
+            assert(mus_file_path != NULL && "ERROR: WE NEED MORE RAM");
+            music_init(mus_file_path);
+        }
+    }
+}
+
 /* Plugin API */
 void plug_init() {
     p = malloc(sizeof(*p));
@@ -1076,13 +1091,7 @@ void plug_update(void) {
 
     if (IsFileDropped()) {
         FilePathList files = LoadDroppedFiles();
-        for (size_t i = 0; i < files.count; ++i) {
-            if (track_exists(files.paths[i])) continue;
-            char* mus_file_path = strdup(files.paths[i]);
-            assert(mus_file_path != NULL && "ERROR: WE NEED MORE RAM");
-
-            music_init(mus_file_path);
-        }
+        load_tracks(files);
         UnloadDroppedFiles(files);
 
         if (track_get_cur() == NULL && p->tracks.count > 0) {
