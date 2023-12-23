@@ -26,9 +26,12 @@ typedef enum {
 } Uniform;
 
 typedef enum {
-    REPEAT = 0,
-    REPEAT_ONCE,
-    SHUFFLE
+    MODE_NONE = 0,            // 000
+    MODE_REPEAT = 1,          // 001
+    MODE_REPEAT1 = 2,         // 010
+    MODE_SHUFFLE = 4,         // 100
+    MODE_REPEAT_SHUFFLE = 5,  // 101
+    MODE_REPEAT1_SHUFFLE = 6  // 110
 } PlayMode;
 
 typedef enum {
@@ -151,6 +154,7 @@ static void music_control_loc(const char* file, int line, Rectangle boundary, Mu
 static void str_fit_width(char* text, float width, float font_size, float text_pad);
 static char* get_track_name(const char* file_path);
 static Rectangle calculate_preview(void);
+static void draw_icon(const char* file_path, int icon_id, int icon_cnt, Rectangle dest, Color c);
 
 /* Constants */
 // Fragment Files
@@ -160,7 +164,7 @@ static Rectangle calculate_preview(void);
 #define FULLSCREEN_IMAGE_FILEPATH "./resources/images/fullscreen.png"
 #define VOLUME_IMAGE_FILEPATH "./resources/images/volume.png"
 #define MUSIC_OPTIONS_IMAGE_FILEPATH "./resources/images/music_options.png"
-#define MUSIC_CTRLS_IMAGE_FILEPATH "./resources/images/music_cntrls.png"
+#define MUSIC_CONTROLS_IMAGE_FILEPATH "./resources/images/music_cntrls.png"
 
 // Controls
 #define KEY_TOGGLE_PLAY KEY_SPACE
@@ -612,6 +616,7 @@ static void popups_render(Popups* ps, Rectangle boundary, float dt) {
 
 /* Fullscreen Button UI renderer */
 static int fullscreen_btn_loc(const char* file, int line, Rectangle boundary) {
+    int icon_cnt = 4;
     uint64_t id = DJB2_INIT;
     id = djb2(id, file, strlen(file));
     id = djb2(id, &line, sizeof(line));
@@ -627,9 +632,7 @@ static int fullscreen_btn_loc(const char* file, int line, Rectangle boundary) {
         icon_id = p->fullscreen ? 2 : 0;
     }
 
-    Texture2D fullscreen_tex = assets_texture(FULLSCREEN_IMAGE_FILEPATH);
-    Rectangle source = {fullscreen_tex.width / 4 * icon_id, 0, fullscreen_tex.width / 4, fullscreen_tex.height};
-    DrawTexturePro(fullscreen_tex, source, btn, CLITERAL(Vector2){0}, 0, c);
+    draw_icon(FULLSCREEN_IMAGE_FILEPATH, icon_id, icon_cnt, btn, c);
 
     return state;
 }
@@ -675,6 +678,7 @@ static void vert_slider_render(Rectangle boundary, float* volume, bool* expanded
 
 static bool volume_control_loc(const char* file, int line, Rectangle boundary) {
     Vector2 mouse = GetMousePosition();
+    int icon_cnt = 3;
 
     static bool expanded = false;
     static float prev_volume = 0.5f;
@@ -713,9 +717,7 @@ static bool volume_control_loc(const char* file, int line, Rectangle boundary) {
     Color c = expanded ? COLOR_HUD_BTN_HOVEROVER : COLOR_HUD_BTN_BACKGROUND;
     int icon_id = icon_id = (p->volume > 0.5f) ? 2 : ((p->volume == 0.0f) ? 0 : 1);
 
-    Texture2D volume_tex = assets_texture(VOLUME_IMAGE_FILEPATH);
-    Rectangle source = {volume_tex.width / 3 * icon_id, 0, volume_tex.width / 3, volume_tex.height};
-    DrawTexturePro(volume_tex, source, btn, CLITERAL(Vector2){0}, 0, c);
+    draw_icon(VOLUME_IMAGE_FILEPATH, icon_id, icon_cnt, btn, c);
 
     Track* track = track_get_cur();
     if (track) SetMusicVolume(track->music, p->volume);
@@ -843,11 +845,11 @@ static void track_panel_render(Rectangle boundary, float dt) {
     {
         ClearBackground(COLOR_TRACK_PANEL_BACKGROUND);
 
-        music_options_render(boundary, p->mode < SHUFFLE ? p->mode : REPEAT, 0);              // Draw repeat
-        music_options_render(boundary, SHUFFLE, 1);                                           // Draw shuffle
-        music_control_render(boundary, TRACK_PREV, 0);                                     // Draw prev
-        music_control_render(boundary, music_is_playing() ? TRACK_PAUSE : TRACK_PLAY, 1);  // Draw pause
-        music_control_render(boundary, TRACK_NEXT, 2);                                     // Draw next
+        music_options_render(boundary, p->mode & MODE_REPEAT1 ? MODE_REPEAT1 : MODE_REPEAT, 0);  // Draw repeat
+        music_options_render(boundary, MODE_SHUFFLE, 1);                                         // Draw shuffle
+        music_control_render(boundary, TRACK_PREV, 0);                                           // Draw prev
+        music_control_render(boundary, music_is_playing() ? TRACK_PAUSE : TRACK_PLAY, 1);        // Draw pause
+        music_control_render(boundary, TRACK_NEXT, 2);                                           // Draw next
 
         Rectangle tracks_boundary = {boundary.x, boundary.y + tracks_offset, boundary.width, boundary.height - tracks_offset};
         BeginScissorMode(tracks_boundary.x, tracks_boundary.y, tracks_boundary.width, tracks_boundary.height);
@@ -872,19 +874,22 @@ static void track_panel_render(Rectangle boundary, float dt) {
 static void music_options_loc(const char* file, int line, Rectangle boundary, PlayMode icon, int icon_pos) {
     int icon_cnt = 2;
     int total_icon_cnt = 3;
-    int icon_id = icon;
+    int icon_id = icon > MODE_REPEAT1 ? icon - MODE_REPEAT1 : icon - MODE_REPEAT; // Get to 0, 1, 2
+
     // float panel_part = (boundary.width - HUD_EDGE_WIDTH) / (icon_cnt * 2);
     // float btn_x = boundary.x + panel_part * (icon_id * icon_cnt + 1) - HUD_ICON_SIZE / 2;
 
     float gap_size = (boundary.width - HUD_EDGE_WIDTH - icon_cnt * HUD_ICON_SIZE) / (icon_cnt + 1);
     float btn_x = boundary.x + icon_pos * HUD_ICON_SIZE + (icon_pos + 1) * gap_size;
 
-    Color c = COLOR_HUD_BTN_HOVEROVER;
+    Color c = COLOR_HUD_BTN_BACKGROUND;
     Rectangle btn = {btn_x, boundary.y + HUD_ICON_MARGIN, HUD_ICON_SIZE, HUD_ICON_SIZE};
-    Texture2D music_opts_tex = assets_texture(MUSIC_OPTIONS_IMAGE_FILEPATH);
-    Rectangle source = {music_opts_tex.width / total_icon_cnt * icon_id, 0, music_opts_tex.width / total_icon_cnt, music_opts_tex.height};
 
-    c = p->mode == icon ? COLOR_HUD_BTN_HOVEROVER : COLOR_HUD_BTN_BACKGROUND;
+    if (p->mode & icon) {
+        c = COLOR_HUD_BTN_HOVEROVER;
+        Rectangle rec = {btn.x - HUD_ICON_MARGIN / 2, btn.y - HUD_ICON_MARGIN / 2, btn.width + HUD_ICON_MARGIN, btn.height + HUD_ICON_MARGIN};
+        DrawRectangleRounded(rec, 0.3, 20, COLOR_TRACK_BUTTON_SELECTED); 
+    }
 
     uint64_t id = DJB2_INIT;
     id = djb2(id, file, strlen(file));
@@ -893,16 +898,20 @@ static void music_options_loc(const char* file, int line, Rectangle boundary, Pl
 
     if (state & BTN_HOVER) c = COLOR_HUD_BTN_HOVEROVER;
     if (state & BTN_CLICKED) {
-        if (p->mode == REPEAT && icon == REPEAT) {
-            p->mode = REPEAT_ONCE;
-        } else if (p->mode == REPEAT_ONCE && icon == REPEAT_ONCE) {
-            p->mode = REPEAT;
+        if (p->mode & MODE_REPEAT && icon == MODE_REPEAT) {
+            p->mode = (p->mode & ~MODE_REPEAT) | MODE_REPEAT1;
+        } else if (p->mode & MODE_REPEAT1 && icon == MODE_REPEAT) {
+            p->mode = p->mode & ~MODE_REPEAT1;
         } else {
-            p->mode = icon;
+            if (p->mode & icon) {
+                p->mode = p->mode & ~icon;
+            } else {
+                p->mode = p->mode | icon;
+            }
         }
     }
 
-    DrawTexturePro(music_opts_tex, source, btn, CLITERAL(Vector2){0}, 0, c);
+    draw_icon(MUSIC_OPTIONS_IMAGE_FILEPATH, icon_id, total_icon_cnt, btn, c);
 }
 
 static void music_control_loc(const char* file, int line, Rectangle boundary, MusicControl icon, int icon_pos) {
@@ -914,8 +923,6 @@ static void music_control_loc(const char* file, int line, Rectangle boundary, Mu
 
     Color c = COLOR_HUD_BTN_BACKGROUND;
     Rectangle btn = {btn_x, boundary.y + 2 * HUD_ICON_MARGIN + HUD_ICON_SIZE, HUD_ICON_SIZE, HUD_ICON_SIZE};
-    Texture2D music_ctrl_tex = assets_texture(MUSIC_CTRLS_IMAGE_FILEPATH);
-    Rectangle source = {music_ctrl_tex.width / total_icon_cnt * icon_id, 0, music_ctrl_tex.width / total_icon_cnt, music_ctrl_tex.height};
 
     uint64_t id = DJB2_INIT;
     id = djb2(id, file, strlen(file));
@@ -938,7 +945,7 @@ static void music_control_loc(const char* file, int line, Rectangle boundary, Mu
         }
     }
 
-    DrawTexturePro(music_ctrl_tex, source, btn, CLITERAL(Vector2){0}, 0, c);
+    draw_icon(MUSIC_CONTROLS_IMAGE_FILEPATH, icon_id, total_icon_cnt, btn, c);
 }
 
 /* Helpers */
@@ -971,6 +978,12 @@ static Rectangle calculate_preview() {
     }
 }
 
+static void draw_icon(const char* file_path, int icon_id, int icon_cnt, Rectangle dest, Color c) {
+    Texture2D tex = assets_texture(file_path);
+    Rectangle source = (Rectangle){tex.width / icon_cnt * icon_id, 0, tex.width / icon_cnt, tex.height};
+    DrawTexturePro(tex, source, dest, CLITERAL(Vector2){0}, 0, c);
+}
+
 /* Plugin API */
 void plug_init() {
     p = malloc(sizeof(*p));
@@ -984,7 +997,7 @@ void plug_init() {
 
     p->cur_track = -1;
     p->volume = 0.5f;
-    p->mode = REPEAT;
+    p->mode = MODE_NONE;
 
     p->circle = LoadShader(NULL, fragment_files[CIRCLE_FRAGMENT]);
     for (Uniform i = 0; i < COUNT_UNIFORMS; i++) {
@@ -1049,7 +1062,7 @@ void plug_update(void) {
     if (track) {
         UpdateMusicStream(track->music);
         if (roundf((GetMusicTimePlayed(track->music))) == roundf(GetMusicTimeLength(track->music))) {
-            if (p->mode == SHUFFLE) {
+            if (p->mode & MODE_SHUFFLE) {
                 track_next_shuffle();
             }
         }
