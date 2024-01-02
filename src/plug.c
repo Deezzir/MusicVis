@@ -111,6 +111,7 @@ static void assets_unload(void);
 static int handle_btn(uint64_t id, Rectangle boundary);
 // FFT and Audio Processing
 static void fft_clean(void);
+static void fft_clean_in(void);
 static void fft(float in[], size_t stride, float complex out[], size_t n);
 static size_t fft_proccess(float dt);
 static void draw_texture_from_endpoints(Texture2D tex, Vector2 start_pos, Vector2 end_pos, float radius, Color c);
@@ -122,11 +123,12 @@ static Track* track_get_cur();
 static Track* track_get_by_idx(int i);
 static void track_remove(int i);
 static void track_next_shuffle();
-static bool track_exists(const char* file_path);
-static void track_prev();
-static void track_stop_play();
-static void track_next();
 static void track_next_in_order();
+static void track_prev();
+static bool track_exists(const char* file_path);
+static void track_stop_play();
+static void track_prev_handle();
+static void track_next_handle(bool by_user);
 static void track_add(char* file_path);
 static void music_play_pause();
 static void music_volume_up();
@@ -205,6 +207,7 @@ static void draw_icon(const char* file_path, int icon_id, int icon_cnt, Rectangl
 #define VELOCITY_DECAY 0.9f
 
 #define HUD_TIMER_SECS 2.0f
+#define UI_NEXT_TRACK_TIMER_SECS 0.4f
 #define HUD_ICON_SIZE_BASE 70.0f
 #define HUD_ICON_MARGIN_BASE 20.0f
 #define HUD_VOLUME_SEGMENTS 4.0f
@@ -246,6 +249,7 @@ const char* fragment_files[COUNT_FRAGMENTS] = {
 typedef struct {
     Tracks tracks;
     int cur_track;
+    bool music_is_paused;
     float volume;
     PlayMode mode;
 
@@ -309,7 +313,7 @@ static void assets_unload() {
 /* Active UI handlers */
 static int handle_btn(uint64_t id, Rectangle boundary) {
     Vector2 mouse = GetMousePosition();
-    int hover = CheckCollisionPointRec(mouse, boundary);
+    int hover = IsCursorOnScreen() && CheckCollisionPointRec(mouse, boundary);
     int clicked = 0;
 
     if (p->active_btn_id == 0) {
@@ -333,6 +337,11 @@ static void fft_clean(void) {
     memset(p->out_logscaled, 0, sizeof(p->out_logscaled));
     memset(p->out_smoothed, 0, sizeof(p->out_smoothed));
     memset(p->out_smeared, 0, sizeof(p->out_smeared));
+}
+
+static void fft_clean_in(void) {
+    memset(p->in_raw, 0, sizeof(p->in_raw));
+    memset(p->in_windowed, 0, sizeof(p->in_windowed));
 }
 
 static void fft(float in[], size_t stride, float complex out[], size_t n) {
@@ -490,25 +499,12 @@ static void track_remove(int i) {
     UnloadMusicStream(track->music);
     free(track->file_path);
     da_remove(&p->tracks, i);
-}
 
-static void track_stop_play() {
-    Track* track = track_get_cur();
-    if (track) {
-        if (IsMusicStreamPlaying(track->music)) {
-            StopMusicStream(track->music);
-        }
-    }
+    if (i < p->cur_track) p->cur_track = p->cur_track - 1;
 }
 
 static void track_next_in_order() {
-    if (p->tracks.count == 1) return;
-
-    int i = p->cur_track;
-    if ((size_t)i == p->tracks.count - 1)
-        i = 0;
-    else
-        i += 1;
+    int i = (p->cur_track + 1) % p->tracks.count;
 
     Track* track = track_get_cur();
     if (track) StopMusicStream(track->music);
@@ -516,10 +512,105 @@ static void track_next_in_order() {
     p->cur_track = i;
 }
 
-static void track_next() {
+static void track_stop_play() {
+    Track* track = track_get_cur();
+    if (!track) return;
+    if (IsMusicStreamPlaying(track->music)) {
+        StopMusicStream(track->music);
+        p->music_is_paused = true;
+    }
+}
+
+static void track_next_handle(bool by_user) {
+    size_t tracks_cnt = p->tracks.count;
+    size_t cur_track = p->cur_track;
+    bool is_last = cur_track == tracks_cnt - 1 || tracks_cnt == 1;
+    Track* track = track_get_cur();
+    if (!track) return;
+
+    // TODO: fix this
+    // SHUFFLE -> last song stops
+    // SHUFFLE -> shuffle list instead of playing random song
+
+    switch (p->mode) {
+        case MODE_REPEAT1_SHUFFLE:
+            if (is_last) {
+                if (by_user)
+                    track_stop_play();
+                else
+                    PlayMusicStream(track->music);
+            } else {
+                if (by_user)
+                    track_next_shuffle();
+                else
+                    PlayMusicStream(track->music);
+            }
+            break;
+        case MODE_REPEAT1:
+            if (is_last) {
+                if (by_user)
+                    track_stop_play();
+                else
+                    track_next_in_order();
+
+            } else {
+                if (by_user)
+                    track_next_in_order();
+                else
+                    PlayMusicStream(track->music);
+            }
+            break;
+        case MODE_REPEAT:
+            track_next_in_order();
+            break;
+        case MODE_SHUFFLE:
+            if (is_last)
+                track_stop_play();
+            else
+                track_next_shuffle();
+            break;
+        default:
+            if (is_last)
+                track_stop_play();
+            else
+                track_next_in_order();
+            break;
+    }
+}
+
+static void track_prev_handle() {
+    Track* track = track_get_cur();
+    if (!track) return;
+
+    if (GetMusicTimePlayed(track->music) < 5.0f && p->tracks.count > 1) {
+        if (p->mode & MODE_SHUFFLE && !(p->mode & MODE_REPEAT1)) {
+            track_next_shuffle();
+        } else if (p->cur_track > 0) {
+            track_prev();
+        } else {
+            if (p->mode & MODE_REPEAT) {
+                Track* track = track_get_cur();
+                if (track) StopMusicStream(track->music);
+                PlayMusicStream(p->tracks.items[p->tracks.count - 1].music);
+                p->cur_track = p->tracks.count - 1;
+            } else {
+                SeekMusicStream(track->music, 0.0f);
+            }
+        }
+    } else {
+        SeekMusicStream(track->music, 0.0f);
+    }
 }
 
 static void track_prev() {
+    if (p->cur_track == 0) {
+        track_stop_play();
+    } else {
+        Track* track = track_get_cur();
+        if (track) StopMusicStream(track->music);
+        PlayMusicStream(p->tracks.items[p->cur_track - 1].music);
+        p->cur_track -= 1;
+    }
 }
 
 static void track_next_shuffle() {
@@ -543,6 +634,7 @@ static bool track_exists(const char* file_path) {
 
 static void track_add(char* file_path) {
     Music music = LoadMusicStream(file_path);
+    music.looping = false;
 
     if (IsMusicReady(music)) {
         SetMusicVolume(music, p->volume);
@@ -570,13 +662,14 @@ static bool music_is_playing() {
 
 static void music_play_pause() {
     Track* track = track_get_cur();
-    if (track) {
-        if (IsMusicStreamPlaying(track->music)) {
-            PauseMusicStream(track->music);
-        } else {
-            PlayMusicStream(track->music);
-            ResumeMusicStream(track->music);
-        }
+    if (!track) return;
+    if (!p->music_is_paused && IsMusicStreamPlaying(track->music)) {
+        PauseMusicStream(track->music);
+        p->music_is_paused = true;
+    } else {
+        PlayMusicStream(track->music);
+        ResumeMusicStream(track->music);
+        p->music_is_paused = false;
     }
 }
 
@@ -714,9 +807,8 @@ static void vert_slider_render(Rectangle boundary, float icon_size, float icon_m
     Color c = COLOR_HUD_BTN_HOVEROVER;
     float segments = HUD_VOLUME_SEGMENTS;
 
-    float slider_w = icon_size / 4;
+    float slider_w = icon_size / 4.5;
     float slider_h = (segments - 1) * icon_size;
-    // float slider_offset = (boundary.height - segments * HUD_ICON_SIZE) / 1.2;
     float slider_radius = slider_w;
     float cutoff = boundary.height - (slider_h + 1.5f * icon_margin);
 
@@ -741,7 +833,7 @@ static void vert_slider_render(Rectangle boundary, float icon_size, float icon_m
         if (IsMouseButtonReleased(MOUSE_BUTTON_LEFT)) dragging = false;
     }
 
-    *expanded = dragging || CheckCollisionPointRec(mouse, boundary);
+    *expanded = dragging || (IsCursorOnScreen() && CheckCollisionPointRec(mouse, boundary));
 }
 
 static bool volume_control_loc(const char* file, int line, Rectangle boundary) {
@@ -766,7 +858,7 @@ static bool volume_control_loc(const char* file, int line, Rectangle boundary) {
     };
     Rectangle btn = {boundary.x + boundary.width - btn_offset, boundary.y + boundary.height - btn_offset, icon_size, icon_size};
 
-    if (CheckCollisionPointRec(mouse, volume_box)) expanded = true;
+    if (IsCursorOnScreen() && CheckCollisionPointRec(mouse, volume_box)) expanded = true;
 
     if (expanded) {
         volume_box.height = segments * icon_size + full_margin + 1.5f * icon_margin;
@@ -819,6 +911,7 @@ static void track_render_loc(const char* file, int line, Rectangle boundary, Rec
     }
     DrawRectangleRounded(item, 0.2, 20, c);
 
+    // TODO: introduce dragging tracks to change order
     float icon_size = (HUD_ICON_SIZE_BASE * boundary.height / BASE_HEIGHT) / 2;
     float icon_margin = (HUD_ICON_MARGIN_BASE * boundary.height / BASE_HEIGHT) / 2;
     Rectangle drag = {item.x + item.width - (icon_size + icon_margin), item.y + item.height / 2 - icon_size / 2, icon_size, icon_size};
@@ -1009,14 +1102,14 @@ static void music_control_loc(const char* file, int line, Rectangle boundary, Mu
     if (state & BTN_CLICKED) {
         switch (icon) {
             case TRACK_PREV:
-                track_prev();
+                track_prev_handle();
                 break;
             case TRACK_PLAY:
             case TRACK_PAUSE:
                 music_play_pause();
                 break;
             case TRACK_NEXT:
-                track_next();
+                track_next_handle(true);
                 break;
         }
     }
@@ -1157,7 +1250,8 @@ void plug_update(void) {
     int h = GetScreenHeight();
 
     static float hud_timer = HUD_TIMER_SECS;
-    static int fullscreen_btn_state = 0;
+    static float next_timer = UI_NEXT_TRACK_TIMER_SECS;
+    static int fullscreen_btn_state = BTN_NONE;
     static bool volume_expanded = false;
 
     Track* track = track_get_cur();
@@ -1165,16 +1259,21 @@ void plug_update(void) {
     if (track) {
         UpdateMusicStream(track->music);
         SetMusicVolume(track->music, p->volume);
-        if (roundf((GetMusicTimePlayed(track->music))) == roundf(GetMusicTimeLength(track->music))) {
-            if (p->mode & MODE_SHUFFLE) {
-                track_next_shuffle();
+
+        if (!IsMusicStreamPlaying(track->music) && !p->music_is_paused) {
+            if (next_timer > 0.0f) {
+                next_timer -= GetFrameTime();
+            } else {
+                fft_clean_in();
+                track_next_handle(false);
+                next_timer = UI_NEXT_TRACK_TIMER_SECS;
             }
         }
 
         if (IsKeyPressed(KEY_TOGGLE_PLAY)) music_play_pause();
         if (IsKeyPressed(KEY_FULLSCREEN1) || IsKeyPressed(KEY_FULLSCREEN2)) p->fullscreen = !p->fullscreen;
-        if (IsKeyPressed(KEY_TRACK_NEXT)) track_next();
-        if (IsKeyPressed(KEY_TRACK_PREV)) track_prev();
+        if (IsKeyPressed(KEY_TRACK_NEXT)) track_next_handle(true);
+        if (IsKeyPressed(KEY_TRACK_PREV)) track_prev_handle();
         if (IsKeyPressed(KEY_VOLUME_DOWN)) music_volume_down();
         if (IsKeyPressed(KEY_VOLUME_UP)) music_volume_up();
     }
