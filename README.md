@@ -26,4 +26,15 @@ export LD_LIBRARY_PATH="./build/:$LD_LIBRARY_PATH"
 ./build/musicvis
 ```
 
-Keep the app running. Rebuild with `./build.sh`. Hot reload by focusing on the window of the app and pressing `R`.
+Keep the app running. Rebuild with `./build.sh`. Hot reload by focusing on the window of the app and pressing `F5`.
+
+## Controls
+
+- `Space`: Pause/Play
+- `Left Arrow`: Previous song
+- `Right Arrow`: Next song
+- `Up Arrow`: Increase volume
+- `Down Arrow`: Decrease volume
+- `F5`: Reload Plugin (only works if `HOTRELOAD` is set to `1`)
+- `F | F11`: Toggle fullscreen
+- `Delete`: Remove a track that is been hovered

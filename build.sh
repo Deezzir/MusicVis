@@ -15,6 +15,6 @@ if [ ! -z "${HOTRELOAD}" ]; then
     clang $CFLAGS -o ./build/libplug.so -fPIC -shared ./src/plug.c $LIBS
     clang $CFLAGS -DHOTRELOAD -o ./build/musicvis ./src/musicvis.c $LIBS -L./build/
 else
-    clang $CFLAGS  -o ./build/musicvis ./src/plug.c ./src/musicvis.c $LIBS -L./build/
+    clang $CFLAGS -O3  -o ./build/musicvis ./src/plug.c ./src/musicvis.c $LIBS -L./build/
     
 fi

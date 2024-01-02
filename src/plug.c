@@ -119,12 +119,18 @@ static void fft_push(float frame);
 static void callback(void* bufferData, unsigned int frames);
 // Track and Music Management
 static Track* track_get_cur();
+static Track* track_get_by_idx(int i);
+static void track_remove(int i);
 static void track_next_shuffle();
 static bool track_exists(const char* file_path);
 static void track_prev();
+static void track_stop_play();
 static void track_next();
-static void music_init(char* file_path);
+static void track_next_in_order();
+static void track_add(char* file_path);
 static void music_play_pause();
+static void music_volume_up();
+static void music_volume_down();
 static bool music_is_playing();
 static void music_mute(float* prev_volume);
 // Timeline UI renderer
@@ -136,7 +142,7 @@ static void popups_render(Popups* ps, Rectangle boundary, float dt);
 #define fullscreen_btn_render(boundary) fullscreen_btn_loc(__FILE__, __LINE__, boundary)
 static int fullscreen_btn_loc(const char* file, int line, Rectangle boundary);
 // Volume Control UI renderer
-static void vert_slider_render(Rectangle boundary, float* volume, bool* expanded);
+static void vert_slider_render(Rectangle boundary, float icon_size, float icon_margin, float* volume, bool* expanded);
 #define volume_control_render(boundary) volume_control_loc(__FILE__, __LINE__, boundary)
 static bool volume_control_loc(const char* file, int line, Rectangle boundary);
 // Track Panel UI renderer
@@ -144,7 +150,7 @@ static bool volume_control_loc(const char* file, int line, Rectangle boundary);
 static void track_render_loc(const char* file, int line, Rectangle boundary, Rectangle item, int i);
 static void tracks_render(Rectangle boundary, float item_size, float scroll_w, float panel_scroll);
 static void track_panel_render(Rectangle boundary, float dt);
-static void handle_scroll(Rectangle boundary, bool* scrolling, float* scrolling_mouse_offset, float* panel_velocity, float scrollable_area, float scroll_w, float panel_scroll, float item_size);
+static void handle_scroll(Rectangle boundary, bool* scroll, float* scroll_offset, float* panel_velocity, float scrollable_area, float scroll_w, float panel_scroll, float item_size);
 // Music Control UI renderer
 #define music_options_render(boundary, mode, icon_pos) music_options_loc(__FILE__, __LINE__, boundary, mode, icon_pos)
 static void music_options_loc(const char* file, int line, Rectangle boundary, PlayMode icon, int icon_pos);
@@ -165,39 +171,50 @@ static void draw_icon(const char* file_path, int icon_id, int icon_cnt, Rectangl
 #define VOLUME_IMAGE_FILEPATH "./resources/images/volume.png"
 #define MUSIC_OPTIONS_IMAGE_FILEPATH "./resources/images/music_options.png"
 #define MUSIC_CONTROLS_IMAGE_FILEPATH "./resources/images/music_cntrls.png"
+#define TRACK_DRAG_IMAGE_FILEPATH "./resources/images/track_drag.png"
 
 // Controls
 #define KEY_TOGGLE_PLAY KEY_SPACE
-#define KEY_FULLSCREEN KEY_F
+#define KEY_FULLSCREEN1 KEY_F
+#define KEY_FULLSCREEN2 KEY_F11
 #define KEY_TOGGLE_MUTE KEY_M
+#define KEY_TRACK_REMOVE KEY_DELETE
+#define KEY_TRACK_NEXT KEY_RIGHT
+#define KEY_TRACK_PREV KEY_LEFT
+#define KEY_VOLUME_UP KEY_UP
+#define KEY_VOLUME_DOWN KEY_DOWN
 
 // Parameters
-#define FFT_SIZE (1 << 13)
-#define FREQ_STEP 1.06f
-#define LOW_FREQ 1.0f
-#define SMOOTHNESS 8
-#define SMEARNESS 3
+#define FFT_SIZE (1 << 14)
+#define FREQ_STEP 1.03f
+#define LOW_FREQ 22.0f
+#define SMOOTHNESS 20
+#define SMEARNESS 5
 
-#define GENERAL_FONT_SIZE 50
-#define TRACK_NAME_FONT_SIZE 15
+#define BASE_WIDTH 1920.0f
+#define BASE_HEIGHT 1080.0f
+
+#define GENERAL_FONT_SIZE 50.0f
+#define TRACK_NAME_FONT_SIZE 15.0f
+#define HUD_POPUP_FONT_SIZE 15.0f
 
 #define PANEL_PERCENT 0.25f
 #define TIMELINE_PERCENT 0.1f
-#define SCROLL_PERCENT 0.03f
+#define SCROLL_PERCENT 0.02f
 #define TRACK_ITEM_PERCENT 0.2f
 #define VELOCITY_DECAY 0.9f
 
 #define HUD_TIMER_SECS 2.0f
-#define HUD_ICON_SIZE 40.0f
-#define HUD_ICON_MARGIN 10.0f
-#define HUD_VOLUME_SEGMENTS 6.0f
+#define HUD_ICON_SIZE_BASE 70.0f
+#define HUD_ICON_MARGIN_BASE 20.0f
+#define HUD_VOLUME_SEGMENTS 4.0f
+#define HUD_VOLUME_STEPS 0.1f
 #define HUD_EDGE_WIDTH 2.0f
 #define HUD_POPUP_LIFETIME_SECS 2.5f
 #define HUD_POPUP_SLIDEIN_SECS 0.1f
 #define HUD_POPUP_WIDTH 300.0f
 #define HUD_POPUP_HEIGHT 50.0f
 #define HUD_POPUP_PAD 10.0f
-#define HUD_POPUP_FONT_SIZE 15.0f
 
 #define HSV_SATURATION 0.75f
 #define HSV_VALUE 1.0f
@@ -241,11 +258,11 @@ typedef struct {
     Popups popups;
 
     float in_raw[FFT_SIZE];
-    float in_wd[FFT_SIZE];
+    float in_windowed[FFT_SIZE];
     float complex out_raw[FFT_SIZE];
-    float out_log[FFT_SIZE];
-    float out_smooth[FFT_SIZE];
-    float out_smear[FFT_SIZE];
+    float out_logscaled[FFT_SIZE];
+    float out_smoothed[FFT_SIZE];
+    float out_smeared[FFT_SIZE];
     float hann[FFT_SIZE];
 } Plug;
 
@@ -311,11 +328,11 @@ static int handle_btn(uint64_t id, Rectangle boundary) {
 /* FFT and Audio Processing */
 static void fft_clean(void) {
     memset(p->in_raw, 0, sizeof(p->in_raw));
-    memset(p->in_wd, 0, sizeof(p->in_wd));
+    memset(p->in_windowed, 0, sizeof(p->in_windowed));
     memset(p->out_raw, 0, sizeof(p->out_raw));
-    memset(p->out_log, 0, sizeof(p->out_log));
-    memset(p->out_smooth, 0, sizeof(p->out_smooth));
-    memset(p->out_smear, 0, sizeof(p->out_smear));
+    memset(p->out_logscaled, 0, sizeof(p->out_logscaled));
+    memset(p->out_smoothed, 0, sizeof(p->out_smoothed));
+    memset(p->out_smeared, 0, sizeof(p->out_smeared));
 }
 
 static void fft(float in[], size_t stride, float complex out[], size_t n) {
@@ -342,11 +359,11 @@ static size_t fft_proccess(float dt) {
 
     // Hann Windowing
     for (size_t i = 0; i < FFT_SIZE; ++i) {
-        p->in_wd[i] = p->in_raw[i] * p->hann[i];
+        p->in_windowed[i] = p->in_raw[i] * p->hann[i];
     }
 
     // Perform FFT
-    fft(p->in_wd, 1, p->out_raw, FFT_SIZE);
+    fft(p->in_windowed, 1, p->out_raw, FFT_SIZE);
 
     for (float f = LOW_FREQ; (size_t)f < FFT_SIZE / 2; f = ceilf(f * FREQ_STEP)) {
         float f1 = ceilf(f * FREQ_STEP);
@@ -358,13 +375,13 @@ static size_t fft_proccess(float dt) {
         }
 
         max_amp = fmaxf(max_amp, ampl);
-        p->out_log[m++] = ampl;
+        p->out_logscaled[m++] = ampl;
     }
 
     for (size_t i = 0; i < m; ++i) {
-        p->out_log[i] /= max_amp;                                                  // Normalize
-        p->out_smooth[i] += (p->out_log[i] - p->out_smooth[i]) * SMOOTHNESS * dt;  // Smooth
-        p->out_smear[i] += (p->out_smooth[i] - p->out_smear[i]) * SMEARNESS * dt;  // Smear
+        p->out_logscaled[i] /= max_amp;                                                      // Normalize
+        p->out_smoothed[i] += (p->out_logscaled[i] - p->out_smoothed[i]) * SMOOTHNESS * dt;  // Smooth
+        p->out_smeared[i] += (p->out_smoothed[i] - p->out_smeared[i]) * SMEARNESS * dt;      // Smear
     }
 
     return m;
@@ -397,8 +414,8 @@ static void fft_render(Rectangle boundary, size_t m) {
 
     // Draw Bars and Circles
     for (size_t i = 0; i < m; ++i) {
-        float t_smooth = p->out_smooth[i];
-        float t_smear = p->out_smear[i];
+        float t_smooth = p->out_smoothed[i];
+        float t_smear = p->out_smeared[i];
 
         float hue = 170;  //(float)i / m * 360;
         Color c = ColorFromHSV(hue, HSV_SATURATION, HSV_VALUE);
@@ -458,25 +475,45 @@ static void callback(void* bufferData, unsigned int frames) {
 
 /* Track and Music Management */
 static Track* track_get_cur() {
-    if (p->cur_track < 0 || (size_t)p->cur_track >= p->tracks.count) return NULL;
-    return &p->tracks.items[p->cur_track];
+    da_get_by_idx(&p->tracks, p->cur_track);
 }
 
-static void music_play_pause() {
+static Track* track_get_by_idx(int i) {
+    da_get_by_idx(&p->tracks, i);
+}
+
+static void track_remove(int i) {
+    Track* track = track_get_by_idx(i);
+    if (track == NULL) return;
+
+    DetachAudioStreamProcessor(track->music.stream, callback);
+    UnloadMusicStream(track->music);
+    free(track->file_path);
+    da_remove(&p->tracks, i);
+}
+
+static void track_stop_play() {
     Track* track = track_get_cur();
     if (track) {
         if (IsMusicStreamPlaying(track->music)) {
-            PauseMusicStream(track->music);
-        } else {
-            ResumeMusicStream(track->music);
+            StopMusicStream(track->music);
         }
     }
 }
 
-static bool music_is_playing() {
+static void track_next_in_order() {
+    if (p->tracks.count == 1) return;
+
+    int i = p->cur_track;
+    if ((size_t)i == p->tracks.count - 1)
+        i = 0;
+    else
+        i += 1;
+
     Track* track = track_get_cur();
-    if (track) return IsMusicStreamPlaying(track->music);
-    return false;
+    if (track) StopMusicStream(track->music);
+    PlayMusicStream(p->tracks.items[i].music);
+    p->cur_track = i;
 }
 
 static void track_next() {
@@ -504,7 +541,7 @@ static bool track_exists(const char* file_path) {
     return false;
 }
 
-static void music_init(char* file_path) {
+static void track_add(char* file_path) {
     Music music = LoadMusicStream(file_path);
 
     if (IsMusicReady(music)) {
@@ -523,6 +560,34 @@ static void music_init(char* file_path) {
 static void music_mute(float* prev_volume) {
     if (p->volume != 0.0f) *prev_volume = p->volume;
     p->volume = p->volume == 0.0f ? *prev_volume : 0.0f;
+}
+
+static bool music_is_playing() {
+    Track* track = track_get_cur();
+    if (track) return IsMusicStreamPlaying(track->music);
+    return false;
+}
+
+static void music_play_pause() {
+    Track* track = track_get_cur();
+    if (track) {
+        if (IsMusicStreamPlaying(track->music)) {
+            PauseMusicStream(track->music);
+        } else {
+            PlayMusicStream(track->music);
+            ResumeMusicStream(track->music);
+        }
+    }
+}
+
+static void music_volume_up() {
+    p->volume += HUD_VOLUME_STEPS;
+    if (p->volume > 1.0f) p->volume = 1.0f;
+}
+
+static void music_volume_down() {
+    p->volume -= HUD_VOLUME_STEPS;
+    if (p->volume < 0.0f) p->volume = 0.0f;
 }
 
 /* Timeline UI renderer */
@@ -621,8 +686,11 @@ static int fullscreen_btn_loc(const char* file, int line, Rectangle boundary) {
     id = djb2(id, file, strlen(file));
     id = djb2(id, &line, sizeof(line));
 
+    float icon_margin = HUD_ICON_MARGIN_BASE * boundary.height / BASE_HEIGHT;
+    float icon_size = HUD_ICON_SIZE_BASE * boundary.height / BASE_HEIGHT;
+
     int icon_id;
-    Rectangle btn = {boundary.x + boundary.width - (HUD_ICON_SIZE + HUD_ICON_MARGIN), boundary.y + HUD_ICON_MARGIN, HUD_ICON_SIZE, HUD_ICON_SIZE};
+    Rectangle btn = {boundary.x + boundary.width - (icon_size + icon_margin), boundary.y + icon_margin, icon_size, icon_size};
     int state = handle_btn(id, btn);
 
     Color c = state & BTN_HOVER ? COLOR_HUD_BTN_HOVEROVER : COLOR_HUD_BTN_BACKGROUND;
@@ -638,7 +706,7 @@ static int fullscreen_btn_loc(const char* file, int line, Rectangle boundary) {
 }
 
 /* Volume Control UI renderer */
-static void vert_slider_render(Rectangle boundary, float* volume, bool* expanded) {
+static void vert_slider_render(Rectangle boundary, float icon_size, float icon_margin, float* volume, bool* expanded) {
     Vector2 mouse = GetMousePosition();
 
     static bool dragging = false;
@@ -646,13 +714,13 @@ static void vert_slider_render(Rectangle boundary, float* volume, bool* expanded
     Color c = COLOR_HUD_BTN_HOVEROVER;
     float segments = HUD_VOLUME_SEGMENTS;
 
-    float slider_w = boundary.width / segments;
-    float slider_h = boundary.height / segments * 4;
-    float slider_offset = (boundary.height - segments * HUD_ICON_SIZE) / 1.2;
-    float slider_radius = HUD_ICON_SIZE / 3.5;
-    float cutoff = boundary.height - slider_h - slider_offset;
+    float slider_w = icon_size / 4;
+    float slider_h = (segments - 1) * icon_size;
+    // float slider_offset = (boundary.height - segments * HUD_ICON_SIZE) / 1.2;
+    float slider_radius = slider_w;
+    float cutoff = boundary.height - (slider_h + 1.5f * icon_margin);
 
-    Rectangle slider_bar = {boundary.x + boundary.width / 2 - slider_w / 2, boundary.y + slider_offset, slider_w, slider_h};
+    Rectangle slider_bar = {boundary.x + boundary.width / 2 - slider_w / 2, boundary.y + icon_margin, slider_w, slider_h};
     Vector2 slider_pos = {slider_bar.x + slider_bar.width / 2, slider_bar.y + slider_bar.height * (1 - p->volume)};
     Rectangle slider_boundary = {boundary.x, boundary.y, boundary.width, boundary.height - cutoff};
 
@@ -683,27 +751,28 @@ static bool volume_control_loc(const char* file, int line, Rectangle boundary) {
     static bool expanded = false;
     static float prev_volume = 0.5f;
 
-    float mouse_wheel_steep = 0.1f;
     float segments = HUD_VOLUME_SEGMENTS;
+    float icon_margin = HUD_ICON_MARGIN_BASE * boundary.height / BASE_HEIGHT;
+    float icon_size = HUD_ICON_SIZE_BASE * boundary.height / BASE_HEIGHT;
 
-    float btn_offset = HUD_ICON_SIZE + HUD_ICON_MARGIN;
-    float full_margin = HUD_ICON_MARGIN * 2;
+    float btn_offset = icon_size + icon_margin;
+    float full_margin = icon_margin * 2;
 
     Rectangle volume_box = {
-        boundary.x + boundary.width - (HUD_ICON_SIZE + full_margin),
-        boundary.y + boundary.height - (HUD_ICON_SIZE + full_margin),
-        HUD_ICON_SIZE + full_margin,
-        HUD_ICON_SIZE + full_margin,
+        boundary.x + boundary.width - (icon_size + full_margin),
+        boundary.y + boundary.height - (icon_size + full_margin),
+        icon_size + full_margin,
+        icon_size + full_margin,
     };
-    Rectangle btn = {boundary.x + boundary.width - btn_offset, boundary.y + boundary.height - btn_offset, HUD_ICON_SIZE, HUD_ICON_SIZE};
+    Rectangle btn = {boundary.x + boundary.width - btn_offset, boundary.y + boundary.height - btn_offset, icon_size, icon_size};
 
     if (CheckCollisionPointRec(mouse, volume_box)) expanded = true;
 
     if (expanded) {
-        volume_box.height = segments * HUD_ICON_SIZE + full_margin;
-        volume_box.y -= (segments - 1) * HUD_ICON_SIZE;
-        vert_slider_render(volume_box, &p->volume, &expanded);
-        p->volume += GetMouseWheelMove() * mouse_wheel_steep;
+        volume_box.height = segments * icon_size + full_margin + 1.5f * icon_margin;
+        volume_box.y -= (segments - 1) * icon_size + 1.5f * icon_margin;
+        vert_slider_render(volume_box, icon_size, icon_margin, &p->volume, &expanded);
+        p->volume += GetMouseWheelMove() * HUD_VOLUME_STEPS;
         if (p->volume < 0.0f) p->volume = 0.0f;
         if (p->volume > 1.0f) p->volume = 1.0f;
     }
@@ -718,9 +787,6 @@ static bool volume_control_loc(const char* file, int line, Rectangle boundary) {
     int icon_id = icon_id = (p->volume > 0.5f) ? 2 : ((p->volume == 0.0f) ? 0 : 1);
 
     draw_icon(VOLUME_IMAGE_FILEPATH, icon_id, icon_cnt, btn, c);
-
-    Track* track = track_get_cur();
-    if (track) SetMusicVolume(track->music, p->volume);
 
     return expanded;
 }
@@ -738,6 +804,7 @@ static void track_render_loc(const char* file, int line, Rectangle boundary, Rec
 
         if (state & BTN_HOVER) {
             c = COLOR_TRACK_BUTTON_HOVEROVER;
+            if (IsKeyPressed(KEY_TRACK_REMOVE)) track_remove(i);
         } else {
             c = COLOR_TRACK_BUTTON_BACKGROUND;
         }
@@ -752,10 +819,15 @@ static void track_render_loc(const char* file, int line, Rectangle boundary, Rec
     }
     DrawRectangleRounded(item, 0.2, 20, c);
 
+    float icon_size = (HUD_ICON_SIZE_BASE * boundary.height / BASE_HEIGHT) / 2;
+    float icon_margin = (HUD_ICON_MARGIN_BASE * boundary.height / BASE_HEIGHT) / 2;
+    Rectangle drag = {item.x + item.width - (icon_size + icon_margin), item.y + item.height / 2 - icon_size / 2, icon_size, icon_size};
+    draw_icon(TRACK_DRAG_IMAGE_FILEPATH, 0, 1, drag, BLACK);
+
     float font_size = TRACK_NAME_FONT_SIZE + item.height * 0.1f;
     float text_pad = item.width * 0.05f;
     char* track_name = get_track_name(p->tracks.items[i].file_path);
-    str_fit_width(track_name, item.width, font_size, text_pad);
+    str_fit_width(track_name, item.width - (icon_size + icon_margin * 2), font_size, text_pad);
     DrawText(track_name, item.x + text_pad, item.y + item.height / 2 - font_size / 2, font_size, BLACK);
     free(track_name);
 }
@@ -775,7 +847,7 @@ static void tracks_render(Rectangle boundary, float item_size, float scroll_w, f
     }
 }
 
-static void handle_scroll(Rectangle boundary, bool* scrolling, float* scrolling_mouse_offset, float* panel_velocity, float scrollable_area, float scroll_w, float panel_scroll, float item_size) {
+static void handle_scroll(Rectangle boundary, bool* scroll, float* scroll_offset, float* panel_velocity, float scrollable_area, float scroll_w, float panel_scroll, float item_size) {
     Vector2 mouse = GetMousePosition();
 
     if (scrollable_area > boundary.height) {
@@ -796,13 +868,13 @@ static void handle_scroll(Rectangle boundary, bool* scrolling, float* scrolling_
         };
         DrawRectangleRounded(scrollbar_boundary, 0.8, 20, COLOR_ACCENT);
 
-        if (*scrolling) {
-            if (IsMouseButtonReleased(MOUSE_LEFT_BUTTON)) *scrolling = false;
+        if (*scroll) {
+            if (IsMouseButtonReleased(MOUSE_LEFT_BUTTON)) *scroll = false;
         } else {
             if (CheckCollisionPointRec(mouse, scrollbar_boundary)) {
                 if (IsMouseButtonPressed(MOUSE_LEFT_BUTTON)) {
-                    *scrolling = true;
-                    *scrolling_mouse_offset = mouse.y - scrollbar_boundary.y;
+                    *scroll = true;
+                    *scroll_offset = mouse.y - scrollbar_boundary.y;
                 }
             } else if (CheckCollisionPointRec(mouse, scrollbar_area)) {
                 if (IsMouseButtonPressed(MOUSE_LEFT_BUTTON)) {
@@ -820,11 +892,11 @@ static void handle_scroll(Rectangle boundary, bool* scrolling, float* scrolling_
 static void track_panel_render(Rectangle boundary, float dt) {
     Vector2 mouse = GetMousePosition();
 
-    static bool scrolling = false;
-    static float scrolling_mouse_offset = 0.0f;
+    static bool scroll = false;
+    static float scroll_offset = 0.0f;
 
     size_t track_count = p->tracks.count;
-    float tracks_offset = HUD_ICON_MARGIN * 3 + 2 * HUD_ICON_SIZE;
+    float tracks_offset = (3 * HUD_ICON_MARGIN_BASE + 2 * HUD_ICON_SIZE_BASE) * boundary.height / BASE_HEIGHT;
     float scroll_w = boundary.width * SCROLL_PERCENT - HUD_EDGE_WIDTH;
     float item_size = boundary.width * TRACK_ITEM_PERCENT;
     float scrollable_area = item_size * track_count;
@@ -836,7 +908,7 @@ static void track_panel_render(Rectangle boundary, float dt) {
     static float panel_scroll = 0.0f;
     panel_scroll -= panel_velocity * dt;
 
-    if (scrolling) panel_scroll = (mouse.y - boundary.y - tracks_offset - scrolling_mouse_offset) / (boundary.height + tracks_offset) * scrollable_area;
+    if (scroll) panel_scroll = (mouse.y - boundary.y - tracks_offset - scroll_offset) / (boundary.height + tracks_offset) * scrollable_area;
     if (panel_scroll < 0) panel_scroll = 0;
     if (max_scroll < 0) max_scroll = 0;
     if (panel_scroll > max_scroll) panel_scroll = max_scroll;
@@ -854,7 +926,7 @@ static void track_panel_render(Rectangle boundary, float dt) {
         Rectangle tracks_boundary = {boundary.x, boundary.y + tracks_offset, boundary.width, boundary.height - tracks_offset};
         BeginScissorMode(tracks_boundary.x, tracks_boundary.y, tracks_boundary.width, tracks_boundary.height);
         {
-            handle_scroll(tracks_boundary, &scrolling, &scrolling_mouse_offset, &panel_velocity, scrollable_area, scroll_w, panel_scroll, item_size);
+            handle_scroll(tracks_boundary, &scroll, &scroll_offset, &panel_velocity, scrollable_area, scroll_w, panel_scroll, item_size);
             tracks_render(tracks_boundary, item_size, scroll_w, panel_scroll);
         }
         EndScissorMode();
@@ -876,18 +948,18 @@ static void music_options_loc(const char* file, int line, Rectangle boundary, Pl
     int total_icon_cnt = 3;
     int icon_id = icon > MODE_REPEAT1 ? icon - MODE_REPEAT1 : icon - MODE_REPEAT;  // Get to 0, 1, 2
 
-    // float panel_part = (boundary.width - HUD_EDGE_WIDTH) / (icon_cnt * 2);
-    // float btn_x = boundary.x + panel_part * (icon_id * icon_cnt + 1) - HUD_ICON_SIZE / 2;
+    float icon_margin = HUD_ICON_MARGIN_BASE * boundary.height / BASE_HEIGHT;
+    float icon_size = HUD_ICON_SIZE_BASE * boundary.height / BASE_HEIGHT;
 
-    float gap_size = (boundary.width - HUD_EDGE_WIDTH - icon_cnt * HUD_ICON_SIZE) / (icon_cnt + 1);
-    float btn_x = boundary.x + icon_pos * HUD_ICON_SIZE + (icon_pos + 1) * gap_size;
+    float gap_size = (boundary.width - HUD_EDGE_WIDTH - icon_cnt * icon_size) / (icon_cnt + 1);
+    float btn_x = boundary.x + icon_pos * icon_size + (icon_pos + 1) * gap_size;
 
     Color c = COLOR_HUD_BTN_BACKGROUND;
-    Rectangle btn = {btn_x, boundary.y + HUD_ICON_MARGIN, HUD_ICON_SIZE, HUD_ICON_SIZE};
+    Rectangle btn = {btn_x, boundary.y + icon_margin, icon_size, icon_size};
 
     if (p->mode & icon) {
         c = COLOR_HUD_BTN_HOVEROVER;
-        Rectangle rec = {btn.x - HUD_ICON_MARGIN / 2, btn.y - HUD_ICON_MARGIN / 2, btn.width + HUD_ICON_MARGIN, btn.height + HUD_ICON_MARGIN};
+        Rectangle rec = {btn.x - icon_margin / 2, btn.y - icon_margin / 2, btn.width + icon_margin, btn.height + icon_margin};
         DrawRectangleRounded(rec, 0.3, 20, COLOR_TRACK_BUTTON_SELECTED);
     }
 
@@ -918,11 +990,15 @@ static void music_control_loc(const char* file, int line, Rectangle boundary, Mu
     int icon_cnt = 3;
     int total_icon_cnt = 4;
     int icon_id = icon;
-    float gap_size = (boundary.width - HUD_EDGE_WIDTH - icon_cnt * HUD_ICON_SIZE) / (icon_cnt + 1);
-    float btn_x = boundary.x + icon_pos * HUD_ICON_SIZE + (icon_pos + 1) * gap_size;
+
+    float icon_margin = HUD_ICON_MARGIN_BASE * boundary.height / BASE_HEIGHT;
+    float icon_size = HUD_ICON_SIZE_BASE * boundary.height / BASE_HEIGHT;
+
+    float gap_size = (boundary.width - HUD_EDGE_WIDTH - icon_cnt * icon_size) / (icon_cnt + 1);
+    float btn_x = boundary.x + icon_pos * icon_size + (icon_pos + 1) * gap_size;
 
     Color c = COLOR_HUD_BTN_BACKGROUND;
-    Rectangle btn = {btn_x, boundary.y + 2 * HUD_ICON_MARGIN + HUD_ICON_SIZE, HUD_ICON_SIZE, HUD_ICON_SIZE};
+    Rectangle btn = {btn_x, boundary.y + 2 * icon_margin + icon_size, icon_size, icon_size};
 
     uint64_t id = DJB2_INIT;
     id = djb2(id, file, strlen(file));
@@ -950,10 +1026,22 @@ static void music_control_loc(const char* file, int line, Rectangle boundary, Mu
 
 /* Helpers */
 static void str_fit_width(char* text, float width, float font_size, float text_pad) {
+    size_t original_len = strlen(text);
     int text_w = MeasureText(text, font_size);
-    while (text_w > width - 2 * text_pad) {
+    int ellipsis_w = MeasureText("...", font_size);
+
+    while (text_w > width - 2 * text_pad && strlen(text) > 0) {
         text[strlen(text) - 1] = '\0';
         text_w = MeasureText(text, font_size);
+    }
+
+    if (strlen(text) < original_len) {
+        do {
+            text[strlen(text) - 1] = '\0';
+            text_w = MeasureText(text, font_size);
+        } while (text_w + ellipsis_w > width - 2 * text_pad && strlen(text) > 0);
+
+        strcat(text, "...");
     }
 }
 
@@ -994,7 +1082,7 @@ static void load_tracks(FilePathList files) {
             if (track_exists(files.paths[i])) continue;
             char* mus_file_path = strdup(files.paths[i]);
             assert(mus_file_path != NULL && "ERROR: WE NEED MORE RAM");
-            music_init(mus_file_path);
+            track_add(mus_file_path);
         }
     }
 }
@@ -1005,6 +1093,7 @@ void plug_init() {
     assert(p != NULL && "ERROR: WE NEED MORE RAM");
     memset(p, 0, sizeof(*p));
 
+    // Precaclulate hann window
     for (size_t i = 0; i < FFT_SIZE; ++i) {
         float t = (float)i / (FFT_SIZE - 1);
         p->hann[i] = 0.5 - 0.5 * cosf(TWO_PI * t);
@@ -1066,7 +1155,6 @@ void plug_post_reload(Plug* prev) {
 void plug_update(void) {
     int w = GetScreenWidth();
     int h = GetScreenHeight();
-    float dt = GetFrameTime();
 
     static float hud_timer = HUD_TIMER_SECS;
     static int fullscreen_btn_state = 0;
@@ -1076,6 +1164,7 @@ void plug_update(void) {
 
     if (track) {
         UpdateMusicStream(track->music);
+        SetMusicVolume(track->music, p->volume);
         if (roundf((GetMusicTimePlayed(track->music))) == roundf(GetMusicTimeLength(track->music))) {
             if (p->mode & MODE_SHUFFLE) {
                 track_next_shuffle();
@@ -1083,10 +1172,11 @@ void plug_update(void) {
         }
 
         if (IsKeyPressed(KEY_TOGGLE_PLAY)) music_play_pause();
-
-        if (IsKeyPressed(KEY_FULLSCREEN)) {
-            p->fullscreen = !p->fullscreen;
-        }
+        if (IsKeyPressed(KEY_FULLSCREEN1) || IsKeyPressed(KEY_FULLSCREEN2)) p->fullscreen = !p->fullscreen;
+        if (IsKeyPressed(KEY_TRACK_NEXT)) track_next();
+        if (IsKeyPressed(KEY_TRACK_PREV)) track_prev();
+        if (IsKeyPressed(KEY_VOLUME_DOWN)) music_volume_down();
+        if (IsKeyPressed(KEY_VOLUME_UP)) music_volume_up();
     }
 
     if (IsFileDropped()) {
@@ -1119,7 +1209,7 @@ void plug_update(void) {
                 if (!(fullscreen_btn_state & BTN_HOVER) && !volume_expanded) hud_timer -= GetFrameTime();
                 if (fabsf(vec2_sum(GetMouseDelta())) > 0.0f) hud_timer = HUD_TIMER_SECS;
             } else {
-                track_panel_render(CLITERAL(Rectangle){0, 0, w * PANEL_PERCENT, preview_size.height}, dt);
+                track_panel_render(CLITERAL(Rectangle){0, 0, w * PANEL_PERCENT, preview_size.height}, GetFrameTime());
                 timeline_render(CLITERAL(Rectangle){0, preview_size.height, w, h * TIMELINE_PERCENT}, track);
             }
 

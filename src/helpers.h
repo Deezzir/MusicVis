@@ -16,13 +16,26 @@
         if ((da)->count >= (da)->capacity) {                                           \
             (da)->capacity = (da)->capacity == 0 ? DA_INIT_CAP : (da)->capacity * 2;   \
             (da)->items = REALLOC((da)->items, (da)->capacity * sizeof(*(da)->items)); \
-            ASSERT((da)->items != NULL && "Buy more RAM lol");                         \
+            ASSERT((da)->items != NULL && "ERROR: WE NEED MORE RAM");                  \
         }                                                                              \
-                                                                                       \
         (da)->items[(da)->count++] = (item);                                           \
     } while (0)
 
-#endif
+// Remove an item by index from a dynamic array
+#define da_remove(da, id)                                                                                       \
+    do {                                                                                                        \
+        if ((da)->count > 0 && (size_t)id < (da)->count) {                                                      \
+            memmove((da)->items + id, (da)->items + (id + 1), ((da)->count - (id + 1)) * sizeof(*(da)->items)); \
+            (da)->count--;                                                                                      \
+        }                                                                                                       \
+    } while (0)
+
+// Get an item by index from a dynamic array
+#define da_get_by_idx(da, id)                                 \
+    do {                                                      \
+        if (id < 0 || (size_t)id >= (da)->count) return NULL; \
+        return &((da)->items[id]);                            \
+    } while (0)
 
 static void* assoc_find_(void* items, size_t item_size, size_t items_count, size_t item_value_offset, const char* key) {
     for (size_t i = 0; i < items_count; i++) {
@@ -76,3 +89,5 @@ uint64_t djb2(uint64_t hash, const void* buf, size_t len) {
     }
     return hash;
 }
+
+#endif
