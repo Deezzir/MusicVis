@@ -225,9 +225,9 @@ static void draw_icon(const char* file_path, int icon_id, int icon_cnt, Rectangl
 #define TWO_PI 2 * PI
 
 #define COLOR_ACCENT ColorFromHSV(200, 0.75, 0.8)
-#define COLOR_BACKGROUND GetColor(0x000015FF)
-#define COLOR_TRACK_PANEL_BACKGROUND ColorBrightness(COLOR_BACKGROUND, -0.1)
-#define COLOR_TRACK_BUTTON_BACKGROUND ColorBrightness(COLOR_BACKGROUND, 0.17)
+#define COLOR_BACKGROUND GetColor(0x0F172AFF)
+#define COLOR_TRACK_PANEL_BACKGROUND ColorBrightness(COLOR_BACKGROUND, -0.3)
+#define COLOR_TRACK_BUTTON_BACKGROUND ColorBrightness(COLOR_BACKGROUND, 0.15)
 #define COLOR_TRACK_BUTTON_HOVEROVER ColorBrightness(COLOR_TRACK_BUTTON_BACKGROUND, 0.15)
 #define COLOR_TRACK_BUTTON_SELECTED COLOR_ACCENT
 #define COLOR_TIMELINE_CURSOR COLOR_ACCENT
@@ -564,9 +564,6 @@ static void track_next_handle(bool by_user) {
             track_next_in_order();
             break;
         case MODE_SHUFFLE:
-            if (is_last)
-                track_stop_play();
-            else
                 track_next_shuffle();
             break;
         default:
@@ -583,9 +580,7 @@ static void track_prev_handle() {
     if (!track) return;
 
     if (GetMusicTimePlayed(track->music) < 5.0f && p->tracks.count > 1) {
-        if (p->mode & MODE_SHUFFLE && !(p->mode & MODE_REPEAT1)) {
-            track_next_shuffle();
-        } else if (p->cur_track > 0) {
+        if ((p->mode & MODE_SHUFFLE && !(p->mode & MODE_REPEAT1)) || p->cur_track > 0) {
             track_prev();
         } else {
             if (p->mode & MODE_REPEAT) {
@@ -911,16 +906,18 @@ static void track_render_loc(const char* file, int line, Rectangle boundary, Rec
     }
     DrawRectangleRounded(item, 0.2, 20, c);
 
-    // TODO: introduce dragging tracks to change order
+    // TODO: introduce track dragging to change order
     float icon_size = (HUD_ICON_SIZE_BASE * boundary.height / BASE_HEIGHT) / 2;
     float icon_margin = (HUD_ICON_MARGIN_BASE * boundary.height / BASE_HEIGHT) / 2;
     Rectangle drag = {item.x + item.width - (icon_size + icon_margin), item.y + item.height / 2 - icon_size / 2, icon_size, icon_size};
+
     draw_icon(TRACK_DRAG_IMAGE_FILEPATH, 0, 1, drag, BLACK);
 
     float font_size = TRACK_NAME_FONT_SIZE + item.height * 0.1f;
     float text_pad = item.width * 0.05f;
     char* track_name = get_track_name(p->tracks.items[i].file_path);
     str_fit_width(track_name, item.width - (icon_size + icon_margin * 2), font_size, text_pad);
+
     DrawText(track_name, item.x + text_pad, item.y + item.height / 2 - font_size / 2, font_size, BLACK);
     free(track_name);
 }
@@ -995,13 +992,15 @@ static void track_panel_render(Rectangle boundary, float dt) {
     float scrollable_area = item_size * track_count;
 
     static float panel_velocity = 0.0f;
-    if (CheckCollisionPointRec(mouse, boundary)) panel_velocity = panel_velocity * VELOCITY_DECAY + GetMouseWheelMove() * item_size * 8;
+    if (CheckCollisionPointRec(mouse, boundary))
+        panel_velocity = panel_velocity * VELOCITY_DECAY + GetMouseWheelMove() * item_size * 8;
 
     float max_scroll = scrollable_area - boundary.height + tracks_offset;
     static float panel_scroll = 0.0f;
     panel_scroll -= panel_velocity * dt;
 
-    if (scroll) panel_scroll = (mouse.y - boundary.y - tracks_offset - scroll_offset) / (boundary.height + tracks_offset) * scrollable_area;
+    if (scroll)
+        panel_scroll = (mouse.y - boundary.y - tracks_offset - scroll_offset) / (boundary.height + tracks_offset) * scrollable_area;
     if (panel_scroll < 0) panel_scroll = 0;
     if (max_scroll < 0) max_scroll = 0;
     if (panel_scroll > max_scroll) panel_scroll = max_scroll;
@@ -1123,19 +1122,12 @@ static void str_fit_width(char* text, float width, float font_size, float text_p
     int text_w = MeasureText(text, font_size);
     int ellipsis_w = MeasureText("...", font_size);
 
-    while (text_w > width - 2 * text_pad && strlen(text) > 0) {
+    while (text_w + ellipsis_w > width - 2 * text_pad && strlen(text) > 0) {
         text[strlen(text) - 1] = '\0';
         text_w = MeasureText(text, font_size);
     }
 
-    if (strlen(text) < original_len) {
-        do {
-            text[strlen(text) - 1] = '\0';
-            text_w = MeasureText(text, font_size);
-        } while (text_w + ellipsis_w > width - 2 * text_pad && strlen(text) > 0);
-
-        strcat(text, "...");
-    }
+    if (strlen(text) < original_len) strcat(text, "...");
 }
 
 static char* get_track_name(const char* file_path) {
@@ -1195,6 +1187,7 @@ void plug_init() {
     p->cur_track = -1;
     p->volume = 0.5f;
     p->mode = MODE_NONE;
+    p->music_is_paused = false;
 
     p->circle = LoadShader(NULL, fragment_files[CIRCLE_FRAGMENT]);
     for (Uniform i = 0; i < COUNT_UNIFORMS; i++) {
@@ -1227,7 +1220,10 @@ Plug* plug_pre_reload(void) {
         Track* track = &p->tracks.items[i];
         DetachAudioStreamProcessor(track->music.stream, callback);
     }
+
+    UnloadShader(p->circle);
     assets_unload();
+
     return p;
 }
 
@@ -1238,7 +1234,6 @@ void plug_post_reload(Plug* prev) {
         AttachAudioStreamProcessor(track->music.stream, callback);
     }
 
-    UnloadShader(p->circle);
     p->circle = LoadShader(NULL, fragment_files[CIRCLE_FRAGMENT]);
     for (Uniform i = 0; i < COUNT_UNIFORMS; i++) {
         p->uniform_locs[i] = GetShaderLocation(p->circle, uniform_names[i]);
@@ -1256,6 +1251,7 @@ void plug_update(void) {
 
     Track* track = track_get_cur();
 
+    // Update music & handle input
     if (track) {
         UpdateMusicStream(track->music);
         SetMusicVolume(track->music, p->volume);
@@ -1278,6 +1274,7 @@ void plug_update(void) {
         if (IsKeyPressed(KEY_VOLUME_UP)) music_volume_up();
     }
 
+    // Handle Drag&Drop
     if (IsFileDropped()) {
         FilePathList files = LoadDroppedFiles();
         load_tracks(files);
@@ -1289,6 +1286,7 @@ void plug_update(void) {
         }
     }
 
+    // Render UI
     BeginDrawing();
     {
         ClearBackground(COLOR_BACKGROUND);
