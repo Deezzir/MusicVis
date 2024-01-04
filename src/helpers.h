@@ -6,10 +6,17 @@ static inline int rand_in_in_range(int min, int max) {
     return rand() % (max - min) + min;
 }
 
-static inline void swap(void** a, void** b) {
+static inline void ptr_swap(void** a, void** b) {
     void* tmp = *a;
     *a = *b;
     *b = tmp;
+}
+
+static inline void content_swap(void* a, void* b, size_t size) {
+    char tmp[size];
+    memcpy(tmp, a, size);
+    memcpy(a, b, size);
+    memcpy(b, tmp, size);
 }
 
 #define ASSERT assert
@@ -37,26 +44,26 @@ static inline void swap(void** a, void** b) {
     } while (0)
 
 // Shuffle a dynamic array
-#define da_shuffle(da, from, safe)                                      \
-    do {                                                                \
-        for (size_t i = 0; i < (da)->count - 1; i++) {                  \
-            if (i >= (size_t)(from)) {                                  \
-                int j = rand_in_in_range(i, (da)->count);               \
-                swap((void**)&(da)->items[i], (void**)&(da)->items[j]); \
-                da_append((safe), j);                                   \
-            } else {                                                    \
-                da_append((safe), i);                                   \
-            }                                                           \
-        }                                                               \
+#define da_shuffle(da, from, safe)                                          \
+    do {                                                                    \
+        for (size_t i = 0; i < (da)->count - 1; i++) {                      \
+            if (i >= (size_t)(from)) {                                      \
+                int j = rand_in_in_range(i, (da)->count);                   \
+                ptr_swap((void**)&(da)->items[i], (void**)&(da)->items[j]); \
+                da_append((safe), j);                                       \
+            } else {                                                        \
+                da_append((safe), i);                                       \
+            }                                                               \
+        }                                                                   \
     } while (0)
 
 // Unshuffle a dynamic array
-#define da_unshuffle(da, safe)                                      \
-    do {                                                            \
-        for (int i = count - 2; i >= 0; i--) {                      \
-            int j = (safe)[i];                                      \
-            swap((void**)&(da)->items[i], (void**)&(da)->items[j]); \
-        }                                                           \
+#define da_unshuffle(da, safe)                                          \
+    do {                                                                \
+        for (int i = count - 2; i >= 0; i--) {                          \
+            int j = (safe)[i];                                          \
+            ptr_swap((void**)&(da)->items[i], (void**)&(da)->items[j]); \
+        }                                                               \
     } while (0)
 
 // Remove an item by index from a dynamic array
@@ -132,6 +139,13 @@ uint64_t djb2(uint64_t hash, const void* buf, size_t len) {
     for (size_t i = 0; i < len; ++i) {
         hash = hash * 33 + bytes[i];
     }
+    return hash;
+}
+
+uint64_t djb2_id(const char* file, int line) {
+    uint64_t hash = DJB2_INIT;
+    hash = djb2(hash, file, strlen(file));
+    hash = djb2(hash, &line, sizeof(line));
     return hash;
 }
 

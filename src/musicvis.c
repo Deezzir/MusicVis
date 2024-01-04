@@ -2,6 +2,7 @@
 #include <raylib.h>
 #include <stdio.h>
 #include <stdlib.h>
+#include <time.h>
 
 #include "plug.h"
 
@@ -65,6 +66,7 @@ int main(void) {
     SetWindowIcon(logo);
     SetExitKey(KEY_NULL);
     InitAudioDevice();
+    SetRandomSeed(time(NULL));
 
     plug_init();
 
