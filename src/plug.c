@@ -566,6 +566,7 @@ static void track_play(size_t id) {
     if (track) StopMusicStream(track->music);
     PlayMusicStream(p->tracks.items[id].music);
     p->cur_track = id;
+    p->music_is_paused = false;
 }
 
 static void track_next_handle(bool by_user) {
@@ -575,9 +576,6 @@ static void track_next_handle(bool by_user) {
     Track* track = track_get_cur();
     if (!track) return;
 
-    // TODO: fix this
-    // SHUFFLE -> shuffle list instead of playing random song
-
     switch (p->mode) {
         case MODE_REPEAT1_SHUFFLE:
             if (is_last) {
@@ -585,12 +583,14 @@ static void track_next_handle(bool by_user) {
                     track_stop_play();
                 } else {
                     PlayMusicStream(track->music);
+                    p->music_is_paused = false;
                 }
             } else {
                 if (by_user) {
                     track_next_shuffle();
                 } else {
                     PlayMusicStream(track->music);
+                    p->music_is_paused = false;
                 }
             }
             break;
@@ -607,6 +607,7 @@ static void track_next_handle(bool by_user) {
                     track_next_in_order();
                 } else {
                     PlayMusicStream(track->music);
+                    p->music_is_paused = false;
                 }
             }
             break;
@@ -956,7 +957,7 @@ static bool track_handle_act_loc(const char* file, int line, Rectangle boundary,
 
     if (state == UIS_DRAG) {
         *c = COLOR_TRACK_BUTTON_DRAGGING;
-        if (mouse.y > (item->y + 1.3f * item->height))track_swap(i, i + 1);
+        if (mouse.y > (item->y + 1.3f * item->height)) track_swap(i, i + 1);
         if (mouse.y < (item->y - 0.3f * item->height)) track_swap(i, i - 1);
 
         if (mouse.y < boundary.y + item->height / 2) mouse.y = boundary.y + item->height / 2;
@@ -1339,6 +1340,7 @@ void plug_update(void) {
 
         if (track_get_cur() == NULL && p->tracks.count > 0) {
             PlayMusicStream(p->tracks.items[0].music);
+            p->music_is_paused = false;
             p->cur_track = 0;
         }
     }
@@ -1383,3 +1385,7 @@ void plug_update(void) {
     }
     EndDrawing();
 }
+
+// TODO: SHUFFLE -> shuffle list instead of playing random song
+// TODO: REPEAT1_SHUFFLE -> play next song instead of stopping
+// TODO: Introduce multithreading
