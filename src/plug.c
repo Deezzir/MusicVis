@@ -192,10 +192,10 @@ static void draw_icon(const char* file_path, int icon_id, int icon_cnt, Rectangl
 #define KEY_VOLUME_DOWN KEY_DOWN
 
 // Parameters
-#define FFT_SIZE (1 << 14)
-#define FREQ_STEP 1.03f
+#define FFT_SIZE (1 << 15)
+#define FREQ_STEP 1.01f
 #define LOW_FREQ 22.0f
-#define SMOOTHNESS 20
+#define SMOOTHNESS 30
 #define SMEARNESS 5
 
 #define BASE_WIDTH 1920.0f
@@ -447,7 +447,7 @@ static void draw_texture_from_endpoints(Texture2D tex, Vector2 start_pos, Vector
 static void fft_render(Rectangle boundary, size_t m) {
     float h = boundary.height;
     float w = boundary.width;
-    float cell_width = roundf(w / m);
+    float cell_width = w / m;
 
     // Draw Bars and Circles
     for (size_t i = 0; i < m; ++i) {
@@ -457,7 +457,7 @@ static void fft_render(Rectangle boundary, size_t m) {
         float hue = 170;  //(float)i / m * 360;
         Color c = ColorFromHSV(hue, HSV_SATURATION, HSV_VALUE);
 
-        float thick = roundf(cell_width / 3);
+        float thick = cell_width;
         float radius = 3 * cell_width * sqrtf(t_smooth);
 
         Texture2D texture = {rlGetTextureIdDefault(), 1, 1, 1, PIXELFORMAT_UNCOMPRESSED_R8G8B8A8};
@@ -484,7 +484,7 @@ static void fft_render(Rectangle boundary, size_t m) {
         EndShaderMode();
 
         // Draw Circles
-        SetShaderValue(p->circle, p->uniform_locs[CIRCLE_RADIUS_UNIFORM], (float[1]){0.08f}, SHADER_UNIFORM_FLOAT);
+        SetShaderValue(p->circle, p->uniform_locs[CIRCLE_RADIUS_UNIFORM], (float[1]){0.15f}, SHADER_UNIFORM_FLOAT);
         SetShaderValue(p->circle, p->uniform_locs[CIRCLE_POWER_UNIFORM], (float[1]){4.0f}, SHADER_UNIFORM_FLOAT);
         BeginShaderMode(p->circle);
         {
