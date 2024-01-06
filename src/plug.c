@@ -3,6 +3,7 @@
 #include <assert.h>
 #include <complex.h>
 #include <math.h>
+#include <pthread.h>
 #include <raylib.h>
 #include <raymath.h>
 #include <rlgl.h>
@@ -113,10 +114,11 @@ static int handle_btn(uint64_t id, Rectangle boundary);
 // FFT and Audio Processing
 static void fft_clean(void);
 static void fft_clean_in(void);
+static void* fft_thread(void* arg);
 static void fft(float in[], size_t stride, float complex out[], size_t n);
-static size_t fft_proccess(float dt);
+static void fft_proccess(float dt);
 static void draw_texture_from_endpoints(Texture2D tex, Vector2 start_pos, Vector2 end_pos, float radius, Color c);
-static void fft_render(Rectangle boundary, size_t m);
+static void fft_render(Rectangle boundary);
 static void fft_push(float frame);
 static void callback(void* bufferData, unsigned int frames);
 // Track and Music Management
@@ -253,20 +255,25 @@ const char* fragment_files[COUNT_FRAGMENTS] = {
 };
 
 typedef struct {
+    // Player
     Tracks tracks;
     int cur_track;
     bool music_is_paused;
     float volume;
     PlayMode mode;
 
+    // UI
     Shader circle;
     int uniform_locs[COUNT_UNIFORMS];
     bool fullscreen;
     uint64_t active_btn_id;
 
+    // Assets
     Assets assets;
     Popups popups;
 
+    // FFT
+    size_t freq_count;
     float in_raw[FFT_SIZE];
     float in_windowed[FFT_SIZE];
     float complex out_raw[FFT_SIZE];
@@ -274,6 +281,13 @@ typedef struct {
     float out_smoothed[FFT_SIZE];
     float out_smeared[FFT_SIZE];
     float hann[FFT_SIZE];
+
+    // Multi Threading
+    bool th_stop;
+    pthread_mutex_t th_mutex;
+    pthread_t th;
+    float* out_smoothed_buf;
+    float* out_smeared_buf;
 } Plug;
 
 static Plug* p = NULL;
@@ -390,8 +404,20 @@ static void fft(float in[], size_t stride, float complex out[], size_t n) {
     }
 }
 
-static size_t fft_proccess(float dt) {
-    size_t m = 0;
+static void* fft_thread(void* arg) {
+    (void)arg;
+    printf("INFO: FFT Thread started\n");
+
+    while (!p->th_stop) {
+        fft_proccess(GetFrameTime());
+    }
+
+    printf("INFO: FFT Thread stopped\n");
+    pthread_exit(NULL);
+}
+
+static void fft_proccess(float dt) {
+    size_t freq_count = 0;
     float max_amp = 1.0f;
 
     // Hann Windowing
@@ -412,16 +438,17 @@ static size_t fft_proccess(float dt) {
         }
 
         max_amp = fmaxf(max_amp, ampl);
-        p->out_logscaled[m++] = ampl;
+        p->out_logscaled[freq_count++] = ampl;
     }
 
-    for (size_t i = 0; i < m; ++i) {
+    pthread_mutex_lock(&p->th_mutex);
+    for (size_t i = 0; i < p->freq_count; ++i) {
         p->out_logscaled[i] /= max_amp;                                                      // Normalize
         p->out_smoothed[i] += (p->out_logscaled[i] - p->out_smoothed[i]) * SMOOTHNESS * dt;  // Smooth
         p->out_smeared[i] += (p->out_smoothed[i] - p->out_smeared[i]) * SMEARNESS * dt;      // Smear
     }
-
-    return m;
+    p->freq_count = freq_count;
+    pthread_mutex_unlock(&p->th_mutex);
 }
 
 static void draw_texture_from_endpoints(Texture2D tex, Vector2 start_pos, Vector2 end_pos, float radius, Color c) {
@@ -444,15 +471,22 @@ static void draw_texture_from_endpoints(Texture2D tex, Vector2 start_pos, Vector
     DrawTexturePro(tex, source, dest, CLITERAL(Vector2){0}, 0, c);
 }
 
-static void fft_render(Rectangle boundary, size_t m) {
+static void fft_render(Rectangle boundary) {
     float h = boundary.height;
     float w = boundary.width;
-    float cell_width = w / m;
 
+    static float cell_width = 0.0f;
+
+    if (pthread_mutex_trylock(&p->th_mutex) == 0) {
+        cell_width = w / p->freq_count;
+        p->out_smoothed_buf = memcpy(p->out_smoothed_buf, p->out_smoothed, p->freq_count * sizeof(p->out_smoothed[0]));
+        p->out_smeared_buf = memcpy(p->out_smeared_buf, p->out_smeared, p->freq_count * sizeof(p->out_smeared[0]));
+        pthread_mutex_unlock(&p->th_mutex);
+    }
     // Draw Bars and Circles
-    for (size_t i = 0; i < m; ++i) {
-        float t_smooth = p->out_smoothed[i];
-        float t_smear = p->out_smeared[i];
+    for (size_t i = 0; i < p->freq_count; ++i) {
+        float t_smooth = p->out_smoothed_buf[i];
+        float t_smear = p->out_smeared_buf[i];
 
         float hue = 170;  //(float)i / m * 360;
         Color c = ColorFromHSV(hue, HSV_SATURATION, HSV_VALUE);
@@ -1224,7 +1258,7 @@ static void load_tracks(FilePathList files) {
         } else {
             if (track_exists(files.paths[i])) continue;
             char* mus_file_path = strdup(files.paths[i]);
-            assert(mus_file_path != NULL && "ERROR: WE NEED MORE RAM");
+            assert(mus_file_path != NULL && "ERROR: Not enough RAM");
             track_add(mus_file_path);
         }
     }
@@ -1233,7 +1267,7 @@ static void load_tracks(FilePathList files) {
 /* Plugin API */
 void plug_init() {
     p = malloc(sizeof(*p));
-    assert(p != NULL && "ERROR: WE NEED MORE RAM");
+    assert(p != NULL && "ERROR: Not enough RAM");
     memset(p, 0, sizeof(*p));
 
     // Precaclulate hann window
@@ -1242,10 +1276,22 @@ void plug_init() {
         p->hann[i] = 0.5 - 0.5 * cosf(TWO_PI * t);
     }
 
+    // Precaclulate frequency count
+    for (float f = LOW_FREQ; (size_t)f < FFT_SIZE / 2; f = ceilf(f * FREQ_STEP)) p->freq_count += 1;
+
     p->cur_track = -1;
     p->volume = 0.5f;
     p->mode = MODE_NONE;
     p->music_is_paused = false;
+
+    p->th_stop = false;
+    pthread_mutex_init(&p->th_mutex, NULL);
+    if (pthread_create(&p->th, NULL, fft_thread, NULL) != 0) {
+        fprintf(stderr, "ERROR: Failed to create thread\n");
+        exit(EXIT_FAILURE);
+    }
+    da_malloc(p->out_smeared_buf, p->freq_count);
+    da_malloc(p->out_smoothed_buf, p->freq_count);
 
     p->circle = LoadShader(NULL, fragment_files[CIRCLE_FRAGMENT]);
     for (Uniform i = 0; i < COUNT_UNIFORMS; i++) {
@@ -1267,6 +1313,13 @@ void plug_clean() {
 
     assets_unload();
 
+    p->th_stop = true;
+    pthread_mutex_destroy(&p->th_mutex);
+    pthread_join(p->th, NULL);
+
+    free(p->out_smeared_buf);
+    free(p->out_smoothed_buf);
+
     da_free(&p->tracks);
     da_free(&p->assets.images);
     da_free(&p->assets.textures);
@@ -1282,6 +1335,9 @@ Plug* plug_pre_reload(void) {
     UnloadShader(p->circle);
     assets_unload();
 
+    p->th_stop = true;
+    pthread_join(p->th, NULL);
+
     return p;
 }
 
@@ -1291,6 +1347,16 @@ void plug_post_reload(Plug* prev) {
         Track* track = &p->tracks.items[i];
         AttachAudioStreamProcessor(track->music.stream, callback);
     }
+
+    p->th_stop = false;
+    for (float f = LOW_FREQ; (size_t)f < FFT_SIZE / 2; f = ceilf(f * FREQ_STEP)) p->freq_count += 1;
+    if (pthread_create(&p->th, NULL, fft_thread, NULL) != 0) {
+        fprintf(stderr, "ERROR: Failed to create thread\n");
+        exit(EXIT_FAILURE);
+    }
+
+    da_realloc(p->out_smeared_buf, p->freq_count);
+    da_realloc(p->out_smoothed_buf, p->freq_count);
 
     p->circle = LoadShader(NULL, fragment_files[CIRCLE_FRAGMENT]);
     for (Uniform i = 0; i < COUNT_UNIFORMS; i++) {
@@ -1351,12 +1417,12 @@ void plug_update(void) {
         ClearBackground(COLOR_BACKGROUND);
 
         if (track) {
-            size_t m = fft_proccess(GetFrameTime());
+            // fft_proccess(GetFrameTime());
             Rectangle preview_size = calculate_preview();
 
             BeginScissorMode(preview_size.x, preview_size.y, preview_size.width, preview_size.height);
             {
-                fft_render(preview_size, m);
+                fft_render(preview_size);
                 popups_render(&p->popups, preview_size, GetFrameTime());
             }
             EndScissorMode();

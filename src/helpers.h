@@ -22,6 +22,7 @@ static inline void content_swap(void* a, void* b, size_t size) {
 #define ASSERT assert
 #define REALLOC realloc
 #define FREE free
+#define MALLOC malloc
 
 // Initial capacity of a dynamic array
 #define DA_INIT_CAP 256
@@ -38,7 +39,7 @@ static inline void content_swap(void* a, void* b, size_t size) {
         if ((da)->count >= (da)->capacity) {                                           \
             (da)->capacity = (da)->capacity == 0 ? DA_INIT_CAP : (da)->capacity * 2;   \
             (da)->items = REALLOC((da)->items, (da)->capacity * sizeof(*(da)->items)); \
-            ASSERT((da)->items != NULL && "ERROR: WE NEED MORE RAM");                  \
+            ASSERT((da)->items != NULL && "ERROR: Not enough RAM");                    \
         }                                                                              \
         (da)->items[(da)->count++] = (item);                                           \
     } while (0)
@@ -64,6 +65,21 @@ static inline void content_swap(void* a, void* b, size_t size) {
             int j = (safe)[i];                                          \
             ptr_swap((void**)&(da)->items[i], (void**)&(da)->items[j]); \
         }                                                               \
+    } while (0)
+
+// Allocate a dynamic array
+#define da_malloc(arr, count)                             \
+    do {                                                  \
+        (arr) = MALLOC((count) * sizeof(*(arr)));         \
+        ASSERT((arr) != NULL && "ERROR: Not enough RAM"); \
+        memset((arr), 0, (count) * sizeof(*(arr)));       \
+    } while (0)
+
+#define da_realloc(arr, count)                            \
+    do {                                                  \
+        (arr) = REALLOC((arr), (count) * sizeof(*(arr))); \
+        ASSERT((arr) != NULL && "ERROR: Not enough RAM"); \
+        memset((arr), 0, (count) * sizeof(*(arr)));       \
     } while (0)
 
 // Remove an item by index from a dynamic array
