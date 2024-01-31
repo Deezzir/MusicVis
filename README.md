@@ -24,7 +24,7 @@ export LD_LIBRARY_PATH="./build/:$LD_LIBRARY_PATH" && make HOTRELOAD=1
 ./build/musicvis
 ```
 
-Keep the app running. Rebuild with `./build.sh`. Hot reload by focusing on the window and pressing `F5`.
+Keep the app running. Rebuild with `make HOTRELOAD=1`. Hot reload by focusing on the window and pressing `F5`.
 
 ## Controls
 
@@ -37,4 +37,3 @@ Keep the app running. Rebuild with `./build.sh`. Hot reload by focusing on the w
 - `F | F11`: Toggle fullscreen
 - `Delete`: Remove a track that is been hovered
 - You can change the order of tracks by hovering on a track and dragging it up or down
-
