@@ -12,6 +12,7 @@ endif
 ifeq ($(HOTRELOAD),1)
     TARGET = hotreload
 else
+	CFLAGS += -O3
     TARGET = release
 endif
 
