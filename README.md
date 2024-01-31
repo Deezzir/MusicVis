@@ -1,10 +1,10 @@
 # Music Vis
 
-This is a project that aims to create a simple music visualizer using the `C` programming language and the `Raylib` library for rendering. Also, it uses FFT to generate the visualizations.
+This project aims to create a simple music visualizer using the `C` programming language and the `Raylib` library for rendering. Also, it uses FFT to generate the visualizations.
 
 ## Demo
 
-![Screenshot from 2024-01-02 03-07-20](https://github.com/Deezzir/MusicVis/assets/55366304/10fe5d7f-c1b3-4b26-a752-ddf53315524c)
+![Screenshot from 2024-01-31 18-41-40](https://github.com/Deezzir/MusicVis/assets/55366304/db2353d1-4137-444d-8b14-a04f45eda571)
 
 Music by `Nu11` and `pilotredsun`.
 
@@ -13,20 +13,18 @@ Music by `Nu11` and `pilotredsun`.
 To run this project, you need to have `gcc` installed on your machine. Then, you can run the following commands:
 
 ```console
-./build.sh
-./musicvis
+make HOTRELOAD=0
+./build/musicvis
 ```
 
 ## Hot Reloading
 
 ```console
-export HOTRELOAD=1
-export LD_LIBRARY_PATH="./build/:$LD_LIBRARY_PATH"
-./build.sh
+export LD_LIBRARY_PATH="./build/:$LD_LIBRARY_PATH" && make HOTRELOAD=1
 ./build/musicvis
 ```
 
-Keep the app running. Rebuild with `./build.sh`. Hot reload by focusing on the window of the app and pressing `F5`.
+Keep the app running. Rebuild with `./build.sh`. Hot reload by focusing on the window and pressing `F5`.
 
 ## Controls
 
@@ -38,3 +36,5 @@ Keep the app running. Rebuild with `./build.sh`. Hot reload by focusing on the w
 - `F5`: Reload Plugin (only works if `HOTRELOAD` is set to `1`)
 - `F | F11`: Toggle fullscreen
 - `Delete`: Remove a track that is been hovered
+- You can change the order of tracks by hovering on a track and dragging it up or down
+
